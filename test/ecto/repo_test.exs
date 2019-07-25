@@ -2,974 +2,1171 @@ defmodule Ecto.RepoTest do
   use ExUnit.Case, async: true
 
   import Ecto.Query
+  import Ecto, only: [put_meta: 2]
   require Ecto.TestRepo, as: TestRepo
 
-  defmodule SubEmbed do
-    use Ecto.Model
+  defmodule MyParent do
+    use Ecto.Schema
 
-    @primary_key {:id, :binary_id, autogenerate: true}
-    schema "" do
-      field :y, :string
+    @schema_prefix "private"
+
+    schema "my_parent" do
+      field :n, :integer
     end
 
-    before_insert :store_changeset, [:before_insert]
-    after_insert  :store_changeset, [:after_insert]
-    before_update :store_changeset, [:before_update]
-    after_update  :store_changeset, [:after_update]
-    before_delete :store_changeset, [:before_delete]
-    after_delete  :store_changeset, [:after_delete]
-
-    def store_changeset(changeset, stage) do
-      Agent.update(CallbackAgent, &[{stage, changeset}|&1])
-      changeset
+    def changeset(struct, params) do
+      Ecto.Changeset.cast(struct, params, [:n])
     end
   end
 
   defmodule MyEmbed do
-    use Ecto.Model
+    use Ecto.Schema
 
-    @primary_key {:id, :binary_id, autogenerate: true}
-    schema "" do
+    embedded_schema do
       field :x, :string
-      embeds_one :sub_embed, SubEmbed, on_replace: :delete
-    end
-
-    before_insert :store_changeset, [:before_insert]
-    after_insert  :store_changeset, [:after_insert]
-    before_update :store_changeset, [:before_update]
-    after_update  :store_changeset, [:after_update]
-    before_delete :store_changeset, [:before_delete]
-    after_delete  :store_changeset, [:after_delete]
-
-    def store_changeset(changeset, stage) do
-      Agent.update(CallbackAgent, &[{stage, changeset}|&1])
-      changeset
     end
   end
 
-  defmodule SubAssoc do
-    use Ecto.Model
+  defmodule MySchema do
+    use Ecto.Schema
 
-    schema "sub_assoc" do
-      field :y, :string
-      belongs_to :my_assoc, MyAssoc
-    end
-  end
-
-  defmodule MyAssoc do
-    use Ecto.Model
-
-    schema "my_assoc" do
+    schema "my_schema" do
       field :x, :string
-      has_one :sub_assoc, SubAssoc
-      belongs_to :my_model, MyModel
-    end
-
-    before_insert :store_changeset, [:before_insert]
-    after_insert  :store_changeset, [:after_insert]
-    before_update :store_changeset, [:before_update]
-    after_update  :store_changeset, [:after_update]
-    before_delete :store_changeset, [:before_delete]
-    after_delete  :store_changeset, [:after_delete]
-
-    def store_changeset(changeset, stage) do
-      Agent.update(CallbackAgent, &[{stage, changeset}|&1])
-      changeset
+      field :y, :binary, source: :yyy
+      field :z, :string, default: "z"
+      field :w, :string, virtual: true
+      field :array, {:array, :string}
+      field :map, {:map, :string}
     end
   end
 
-  defmodule MyModel do
-    use Ecto.Model
+  defmodule MySchemaWithPrefix do
+    use Ecto.Schema
 
-    schema "my_model" do
+    @schema_prefix "private"
+
+    schema "my_schema" do
       field :x, :string
-      field :y, :binary
-      embeds_one :embed, MyEmbed, on_replace: :delete
-      embeds_many :embeds, MyEmbed, on_replace: :delete
-      has_one :assoc, MyAssoc, on_replace: :delete
-      has_many :assocs, MyAssoc, on_replace: :delete
-    end
-
-    before_insert :store_changeset, [:before_insert]
-    after_insert  :store_changeset, [:after_insert]
-    before_update :store_changeset, [:before_update]
-    after_update  :store_changeset, [:after_update]
-    before_delete :store_changeset, [:before_delete]
-    after_delete  :store_changeset, [:after_delete]
-
-    def store_changeset(changeset, stage) do
-      Agent.update(CallbackAgent, &[{stage, changeset}|&1])
-      changeset
     end
   end
 
-  defmodule MyModelNoPK do
-    use Ecto.Model
+  defmodule MySchemaWithAssoc do
+    use Ecto.Schema
+
+    schema "my_schema" do
+      field :n, :integer
+      belongs_to :parent, MyParent
+    end
+  end
+
+  defmodule MySchemaWithEmbed do
+    use Ecto.Schema
+
+    schema "my_schema" do
+      field :x, :string
+      embeds_many :embeds, MyEmbed
+    end
+  end
+
+  defmodule MySchemaNoPK do
+    use Ecto.Schema
 
     @primary_key false
-    schema "my_model" do
+    schema "my_schema" do
       field :x, :string
     end
   end
 
-  setup do
-    {:ok, pid} = Agent.start_link(fn -> [] end, name: CallbackAgent)
-    on_exit fn -> Process.alive?(pid) && Agent.stop(pid) end
-    :ok
+  test "defines child_spec/1" do
+    assert TestRepo.child_spec([]) == %{
+      id: TestRepo,
+      start: {TestRepo, :start_link, [[]]},
+      type: :supervisor
+    }
   end
 
-  test "needs model with primary key field" do
-    model = %MyModelNoPK{x: "abc"}
+  test "load/2" do
+    # string fields
+    assert %MySchema{x: "abc"} =
+           TestRepo.load(MySchema, %{"x" => "abc"})
 
-    assert_raise Ecto.NoPrimaryKeyFieldError, fn ->
-      TestRepo.update!(model |> Ecto.Changeset.change, force: true)
+    # atom fields
+    assert %MySchema{x: "abc"} =
+           TestRepo.load(MySchema, %{x: "abc"})
+
+    # keyword list
+    assert %MySchema{x: "abc"} =
+           TestRepo.load(MySchema, [x: "abc"])
+
+    # atom fields and values
+    assert %MySchema{x: "abc"} =
+           TestRepo.load(MySchema, {[:x], ["abc"]})
+
+    # string fields and values
+    assert %MySchema{x: "abc"} =
+           TestRepo.load(MySchema, {["x"], ["abc"]})
+
+    # default value
+    assert %MySchema{x: "abc", z: "z"} =
+           TestRepo.load(MySchema, %{x: "abc"})
+
+    # source field
+    assert %MySchema{y: "abc"} =
+           TestRepo.load(MySchema, %{yyy: "abc"})
+
+    # array field
+    assert %MySchema{array: ["one", "two"]} =
+           TestRepo.load(MySchema, %{array: ["one", "two"]})
+
+    # map field with atoms
+    assert %MySchema{map: %{color: "red"}} =
+           TestRepo.load(MySchema, %{map: %{color: "red"}})
+
+    # map field with strings
+    assert %MySchema{map: %{"color" => "red"}} =
+           TestRepo.load(MySchema, %{map: %{"color" => "red"}})
+
+    # nil
+    assert %MySchema{x: nil} =
+           TestRepo.load(MySchema, %{x: nil})
+
+    # invalid field is ignored
+    assert %MySchema{} =
+           TestRepo.load(MySchema, %{bad: "bad"})
+
+    # invalid value
+    assert_raise ArgumentError, "cannot load `0` as type :string for field `x` in schema Ecto.RepoTest.MySchema", fn ->
+      TestRepo.load(MySchema, %{x: 0})
     end
 
-    assert_raise Ecto.NoPrimaryKeyFieldError, fn ->
-      TestRepo.delete!(model)
-    end
-
-    assert_raise Ecto.NoPrimaryKeyFieldError, fn ->
-      TestRepo.get(MyModelNoPK, 123)
-    end
+    # schemaless
+    assert TestRepo.load(%{x: :string}, %{x: "abc", bad: "bad"}) ==
+           %{x: "abc"}
   end
 
-  test "works with primary key value" do
-    model = %MyModel{id: 1, x: "abc"}
-    TestRepo.get(MyModel, 123)
-    TestRepo.get_by(MyModel, x: "abc")
-    TestRepo.update!(model |> Ecto.Changeset.change, force: true)
-    TestRepo.delete!(model)
-  end
+  describe "get" do
+    test "raises on bad inputs" do
+      TestRepo.get(MySchema, 123)
 
-  test "works with custom source model" do
-    model = %MyModel{id: 1, x: "abc"} |> Ecto.Model.put_meta(source: "custom_model")
-    TestRepo.update!(model |> Ecto.Changeset.change, force: true)
-    TestRepo.delete!(model)
+      message = "cannot perform Ecto.Repo.get/2 because the given value is nil"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.get(MySchema, nil)
+      end
 
-    to_insert = %MyModel{x: "abc"} |> Ecto.Model.put_meta(source: "custom_model")
-    TestRepo.insert!(to_insert)
-  end
+      message = ~r"value `:atom` in `where` cannot be cast to type :id in query"
+      assert_raise Ecto.Query.CastError, message, fn ->
+        TestRepo.get(MySchema, :atom)
+      end
 
-  test "fails without primary key value" do
-    model = %MyModel{x: "abc"}
-
-    assert_raise Ecto.NoPrimaryKeyValueError, fn ->
-      TestRepo.update!(model |> Ecto.Changeset.change, force: true)
-    end
-
-    assert_raise Ecto.NoPrimaryKeyValueError, fn ->
-      TestRepo.delete!(model)
-    end
-  end
-
-  test "validates model types" do
-    model = %MyModel{x: 123}
-
-    assert_raise Ecto.ChangeError, fn ->
-      TestRepo.insert!(model)
-    end
-  end
-
-  test "validates get" do
-    TestRepo.get(MyModel, 123)
-
-    message = "cannot perform Ecto.TestRepo.get/2 because the given value is nil"
-    assert_raise ArgumentError, message, fn ->
-      TestRepo.get(MyModel, nil)
-    end
-
-    message = ~r"value `:atom` in `where` cannot be cast to type :id in query"
-    assert_raise Ecto.CastError, message, fn ->
-      TestRepo.get(MyModel, :atom)
-    end
-
-    message = ~r"expected a from expression with a model in query"
-    assert_raise Ecto.QueryError, message, fn ->
-      TestRepo.get(%Ecto.Query{}, :atom)
-    end
-  end
-
-  test "validates get_by" do
-    TestRepo.get_by(MyModel, id: 123)
-
-    message = "cannot perform Ecto.TestRepo.get_by/2 because :id is nil"
-    assert_raise ArgumentError, message, fn ->
-      TestRepo.get_by(MyModel, id: nil)
-    end
-
-    message = ~r"value `:atom` in `where` cannot be cast to type :id in query"
-    assert_raise Ecto.CastError, message, fn ->
-      TestRepo.get_by(MyModel, id: :atom)
+      message = ~r"expected a from expression with a schema in query"
+      assert_raise Ecto.QueryError, message, fn ->
+        TestRepo.get(%Ecto.Query{}, :atom)
+      end
     end
   end
 
-  test "validates update_all" do
-    # Success
-    TestRepo.update_all(MyModel, set: [x: "321"])
+  describe "get_by" do
+    test "raises on bad inputs" do
+      TestRepo.get_by(MySchema, id: 123)
+      TestRepo.get_by(MySchema, %{id: 123})
 
-    query = from(e in MyModel, where: e.x == "123", update: [set: [x: "321"]])
-    TestRepo.update_all(query, [])
-
-    # Failures
-    assert_raise Ecto.QueryError, fn ->
-      TestRepo.update_all from(e in MyModel, select: e), set: [x: "321"]
-    end
-
-    assert_raise Ecto.QueryError, fn ->
-      TestRepo.update_all from(e in MyModel, order_by: e.x), set: [x: "321"]
-    end
-
-    changeset = Ecto.Changeset.change(%MyEmbed{})
-    assert catch_error(TestRepo.update_all MyModel, set: [embed: %MyEmbed{}])
-    assert catch_error(TestRepo.update_all MyModel, set: [embed: changeset])
-  end
-
-  test "validates delete_all" do
-    # Success
-    TestRepo.delete_all(MyModel)
-
-    query = from(e in MyModel, where: e.x == "123")
-    TestRepo.delete_all(query)
-
-    # Failures
-    assert_raise Ecto.QueryError, fn ->
-      TestRepo.delete_all from(e in MyModel, select: e)
-    end
-
-    assert_raise Ecto.QueryError, fn ->
-      TestRepo.delete_all from(e in MyModel, order_by: e.x)
+      message = ~r"value `:atom` in `where` cannot be cast to type :id in query"
+      assert_raise Ecto.Query.CastError, message, fn ->
+        TestRepo.get_by(MySchema, id: :atom)
+      end
     end
   end
 
-  ## Changesets
+  describe "aggregate" do
+    test "aggregates on the given field" do
+      TestRepo.aggregate(MySchema, :min, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: min(m0.id)>"
 
-  test "insert, update and delete accepts changesets" do
-    valid = Ecto.Changeset.cast(%MyModel{id: 1}, %{}, [], [])
-    assert {:ok, %MyModel{}} = TestRepo.insert(valid)
-    assert {:ok, %MyModel{}} = TestRepo.update(valid)
-    assert {:ok, %MyModel{}} = TestRepo.delete(valid)
-  end
+      TestRepo.aggregate(MySchema, :max, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: max(m0.id)>"
 
-  test "insert, update and delete errors on invalid changeset" do
-    invalid = %Ecto.Changeset{valid?: false, model: %MyModel{}}
+      TestRepo.aggregate(MySchema, :sum, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: sum(m0.id)>"
 
-    insert = %{invalid | action: :insert, repo: TestRepo, opts: [source: :changeset]}
-    assert {:error, ^insert} = TestRepo.insert(invalid)
+      TestRepo.aggregate(MySchema, :avg, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: avg(m0.id)>"
 
-    update = %{invalid | action: :update, repo: TestRepo, opts: [source: :changeset]}
-    assert {:error, ^update} = TestRepo.update(invalid)
-
-    delete = %{invalid | action: :delete, repo: TestRepo, opts: [source: :changeset]}
-    assert {:error, ^delete} = TestRepo.delete(invalid)
-  end
-
-  test "insert!, update! and delete! accepts changesets" do
-    valid = Ecto.Changeset.cast(%MyModel{id: 1}, %{}, [], [])
-    assert %MyModel{} = TestRepo.insert!(valid)
-    assert %MyModel{} = TestRepo.update!(valid)
-    assert %MyModel{} = TestRepo.delete!(valid)
-  end
-
-  test "insert!, update! and delete! fail on invalid changeset" do
-    invalid = %Ecto.Changeset{valid?: false, model: %MyModel{}}
-
-    assert_raise Ecto.InvalidChangesetError,
-                 ~r"could not perform insert because changeset is invalid", fn ->
-      TestRepo.insert!(invalid)
+      TestRepo.aggregate(MySchema, :count, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: count(m0.id)>"
     end
 
-    assert_raise Ecto.InvalidChangesetError,
-                 ~r"could not perform update because changeset is invalid", fn ->
-      TestRepo.update!(invalid)
+    test "aggregates handle a prefix option" do
+      TestRepo.aggregate(MySchema, :min, :id, prefix: "public")
+      assert_received {:all, query}
+      assert query.prefix == "public"
     end
 
-    assert_raise Ecto.InvalidChangesetError,
-                 ~r"could not perform delete because changeset is invalid", fn ->
-      TestRepo.delete!(invalid)
-    end
-  end
-
-  test "insert!, update! and delete! fail on changeset without model" do
-    invalid = %Ecto.Changeset{valid?: true, model: nil}
-
-    assert_raise ArgumentError, "cannot insert a changeset without a model", fn ->
-      TestRepo.insert!(invalid)
+    test "removes any preload from query" do
+      from(MySchemaWithAssoc, preload: :parent) |> TestRepo.aggregate(:count, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchemaWithAssoc, select: count(m0.id)>"
     end
 
-    assert_raise ArgumentError, "cannot update a changeset without a model", fn ->
-      TestRepo.update!(invalid)
+    test "removes order by from query without distinct/limit/offset" do
+      from(MySchema, order_by: :id) |> TestRepo.aggregate(:count, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: count(m0.id)>"
     end
 
-    assert_raise ArgumentError, "cannot delete a changeset without a model", fn ->
-      TestRepo.delete!(invalid)
-    end
-  end
-
-  test "insert!, update! and delete! fail on changeset with wrong action" do
-    invalid = %Ecto.Changeset{valid?: true, model: %MyModel{}, action: :other}
-
-    assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.insert/2", fn ->
-      TestRepo.insert!(invalid)
+    test "overrides any select" do
+      from(MySchema, select: true) |> TestRepo.aggregate(:count, :id)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, select: count(m0.id)>"
     end
 
-    assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.update/2", fn ->
-      TestRepo.update!(invalid)
+    test "uses subqueries with distinct/limit/offset" do
+      from(MySchema, limit: 5) |> TestRepo.aggregate(:count, :id)
+      assert_received {:all, query}
+      assert inspect(query) ==
+               "#Ecto.Query<from m0 in subquery(from m0 in Ecto.RepoTest.MySchema,\n" <>
+                "  limit: 5,\n" <>
+                "  select: %{id: m0.id}), select: count(m0.id)>"
     end
 
-    assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.delete/2", fn ->
-      TestRepo.delete!(invalid)
+    test "raises when aggregating with group_by" do
+      assert_raise Ecto.QueryError, ~r"cannot aggregate on query with group_by", fn ->
+        from(MySchema, group_by: [:id]) |> TestRepo.aggregate(:count, :id)
+      end
     end
   end
 
-  ## Changesets
+  describe "exists?" do
+    test "selects 1 and sets limit to 1" do
+      TestRepo.exists?(MySchema)
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, limit: 1, select: 1>"
 
-  @uuid "30313233-3435-3637-3839-616263646566"
-
-  test "uses correct status" do
-    get_action = fn [{stage, changeset}|_] ->
-      {stage, changeset.action}
+      from(MySchema, select: [:id], limit: 10) |> TestRepo.exists?
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, limit: 1, select: 1>"
     end
 
-    TestRepo.insert!(%MyModel{})
-    assert Agent.get(CallbackAgent, get_action) == {:after_insert, :insert}
-
-    changeset = Ecto.Changeset.cast(%MyModel{}, %{}, [], [])
-    TestRepo.insert!(changeset)
-    assert Agent.get(CallbackAgent, get_action) == {:after_insert, :insert}
-
-    changeset = Ecto.Changeset.cast(%MyModel{id: 1}, %{}, [], [])
-    TestRepo.update!(changeset, force: true)
-    assert Agent.get(CallbackAgent, get_action) == {:after_update, :update}
-
-    TestRepo.delete!(%MyModel{id: 1})
-    assert Agent.get(CallbackAgent, get_action) == {:after_delete, :delete}
-
-    changeset = Ecto.Changeset.cast(%MyModel{id: 1}, %{}, [], [])
-    TestRepo.delete!(changeset)
-    assert Agent.get(CallbackAgent, get_action) == {:after_delete, :delete}
-  end
-
-  defp get_before_changes([_, {_, changeset} | _]), do: changeset.changes
-  defp get_after_changes([{_, changeset} | _]), do: changeset.changes
-
-  test "adds embeds to changeset as empty on insert" do
-    TestRepo.insert!(%MyModel{})
-    assert Agent.get(CallbackAgent, &get_before_changes/1) ==
-      %{id: nil, embed: nil, embeds: [], x: nil, y: nil}
-    assert Agent.get(CallbackAgent, &get_after_changes/1) ==
-      %{id: nil, x: nil, y: nil}
-  end
-
-  test "skips adding assocs to changeset on insert" do
-    TestRepo.insert!(%MyModel{})
-    assert Agent.get(CallbackAgent, &get_before_changes/1) ==
-      %{id: nil, embed: nil, embeds: [], x: nil, y: nil}
-    assert Agent.get(CallbackAgent, &get_after_changes/1) ==
-      %{id: nil, x: nil, y: nil}
-  end
-
-  defp get_models(changesets) do
-    Enum.map(changesets, fn {stage, changeset} ->
-      {stage, changeset.model.__struct__}
-    end)
-  end
-
-  test "handles embeds on insert" do
-    embed = %MyEmbed{x: "xyz"}
-
-    changeset = Ecto.Changeset.change(%MyModel{}, embed: embed)
-    model = TestRepo.insert!(changeset)
-    assert [{:after_insert, MyModel}, {:after_insert, MyEmbed},
-            {:before_insert, MyEmbed}, {:before_insert, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    id = model.embed.id
-    assert id
-    assert model.embed == %{embed | id: id}
-
-    changeset = Ecto.Changeset.change(%MyModel{}, embeds: [embed])
-    model = TestRepo.insert!(changeset)
-    assert [{:after_insert, MyModel}, {:after_insert, MyEmbed},
-            {:before_insert, MyEmbed}, {:before_insert, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    [%{id: id}] = model.embeds
-    assert id
-    assert model.embeds == [%{embed | id: id}]
-  end
-
-  test "handles embeds on insert when error" do
-    embed = %MyEmbed{x: "xyz"}
-    embed_changeset = Ecto.Changeset.change(embed)
-
-    # Raises with embeds when inserting model
-    assert_raise ArgumentError, ~r"set for embed named `embed`", fn ->
-      TestRepo.insert!(%MyModel{embed: embed})
+    test "removes any preload from query" do
+      from(MySchemaWithAssoc, preload: :parent) |> TestRepo.exists?
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchemaWithAssoc, limit: 1, select: 1>"
     end
 
-    assert_raise ArgumentError, ~r"set for embed named `embeds`", fn ->
-      TestRepo.insert!(%MyModel{embeds: [embed]})
+    test "removes distinct from query" do
+      from(MySchema, select: [:id], distinct: true) |> TestRepo.exists?
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, limit: 1, select: 1>"
     end
 
-    # Raises if action is update
-    changeset = Ecto.Changeset.change(%MyModel{}, embed: embed_changeset)
-    changeset = put_in(changeset.changes.embed.action, :update)
-    assert_raise ArgumentError, ~r"got action :update in changeset for embedded .* while inserting", fn ->
+    test "removes order by from query without distinct/limit/offset" do
+      from(MySchema, order_by: :id) |> TestRepo.exists?
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, limit: 1, select: 1>"
+    end
+
+    test "overrides any select" do
+      from(MySchema, select: true) |> TestRepo.exists?
+      assert_received {:all, query}
+      assert inspect(query) == "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, limit: 1, select: 1>"
+    end
+  end
+
+  describe "stream" do
+    test "emits row values lazily" do
+      stream = TestRepo.stream(MySchema)
+      refute_received {:stream, _}
+      assert [%MySchema{id: 1}] = Enum.to_list(stream)
+      assert_received {:stream, _}
+      assert Enum.take(stream, 0) == []
+      refute_received {:stream, _}
+    end
+
+    test "does not work with preloads" do
+      query = from m in MySchemaWithAssoc, preload: [:parent]
+
+      assert_raise Ecto.QueryError, ~r"preloads are not supported on streams", fn ->
+        TestRepo.stream(query)
+      end
+
+      query =
+        MySchemaWithAssoc
+        |> join(:inner, [m], p in assoc(m, :parent))
+        |> preload([_m, p], parent: p)
+
+      assert_raise Ecto.QueryError, ~r"preloads are not supported on streams", fn ->
+        TestRepo.stream(query)
+      end
+    end
+  end
+
+  test "insert with returning" do
+    TestRepo.insert(%MySchemaWithAssoc{}, returning: [:id])
+    assert_received {:insert, %{source: "my_schema", returning: [:id]}}
+    TestRepo.insert(%MySchemaWithAssoc{}, returning: true)
+    assert_received {:insert, %{source: "my_schema", returning: [:id, :parent_id, :n]}}
+    TestRepo.insert(%MySchemaWithAssoc{}, returning: false)
+    assert_received {:insert, %{source: "my_schema", returning: [:id]}}
+  end
+
+  test "update with returning" do
+    changeset = Ecto.Changeset.change(%MySchemaWithAssoc{id: 1}, %{n: 2})
+    TestRepo.update(changeset, returning: [])
+    assert_received {:update, %{source: "my_schema", returning: []}}
+    TestRepo.update(changeset, returning: true)
+    assert_received {:update, %{source: "my_schema", returning: []}}
+    TestRepo.update(changeset, returning: false)
+    assert_received {:update, %{source: "my_schema", returning: []}}
+  end
+
+  describe "insert_all" do
+    test "takes query" do
+      import Ecto.Query
+
+      value = "foo"
+      query = from(s in MySchema, select: s.x, where: s.y == ^value)
+
+      TestRepo.insert_all(MySchema, [
+        [y: "y1", x: "x1"],
+        [x: query, z: "z2"],
+        [z: "z3", x: query],
+        [y: query, z: query]
+      ])
+
+      assert_received {:insert_all, %{source: "my_schema"}, rows}
+      assert [[x: "x1", yyy: "y1"],
+              [x: {%Ecto.Query{} = query2, [^value]}, z: "z2"],
+              [x: {%Ecto.Query{} = query3, [^value]}, z: "z3"],
+              [yyy: {%Ecto.Query{} = query4y, [^value]}, z: {%Ecto.Query{} = query4x, [^value]}]] = rows
+
+      assert [%{expr: {:==, _, [_, {:^, [], [2]}]}}] = query2.wheres
+      assert [%{expr: {:==, _, [_, {:^, [], [4]}]}}] = query3.wheres
+      assert [%{expr: {:==, _, [_, {:^, [], [6]}]}}] = query4y.wheres
+      assert [%{expr: {:==, _, [_, {:^, [], [7]}]}}] = query4x.wheres
+    end
+
+    test "raises when on associations" do
+      assert_raise ArgumentError, fn ->
+        TestRepo.insert_all MySchema, [%{another: nil}]
+      end
+    end
+  end
+
+  describe "update_all" do
+    test "raises on bad input" do
+      # Success
+      TestRepo.update_all(MySchema, set: [x: "321"])
+
+      query = from(e in MySchema, where: e.x == "123", update: [set: [x: "321"]])
+      TestRepo.update_all(query, [])
+
+      assert_raise Ecto.QueryError, fn ->
+        TestRepo.update_all from(e in MySchema, order_by: e.x), set: [x: "321"]
+      end
+    end
+  end
+
+  describe "delete_all" do
+    test "raises on bad inputs" do
+      # Success
+      TestRepo.delete_all(MySchema)
+
+      query = from(e in MySchema, where: e.x == "123")
+      TestRepo.delete_all(query)
+
+      assert_raise Ecto.QueryError, fn ->
+        TestRepo.delete_all from(e in MySchema, order_by: e.x)
+      end
+    end
+  end
+
+  describe "schema operations" do
+    test "needs schema with primary key field" do
+      schema = %MySchemaNoPK{x: "abc"}
+
+      assert_raise Ecto.NoPrimaryKeyFieldError, fn ->
+        TestRepo.update!(schema |> Ecto.Changeset.change, force: true)
+      end
+
+      assert_raise Ecto.NoPrimaryKeyFieldError, fn ->
+        TestRepo.delete!(schema)
+      end
+    end
+
+    test "works with primary key value" do
+      schema = %MySchema{id: 1, x: "abc"}
+      TestRepo.get(MySchema, 123)
+      TestRepo.get_by(MySchema, x: "abc")
+      TestRepo.update!(schema |> Ecto.Changeset.change, force: true)
+      TestRepo.delete!(schema)
+    end
+
+    test "fails without primary key value" do
+      schema = %MySchema{x: "abc"}
+
+      assert_raise Ecto.NoPrimaryKeyValueError, fn ->
+        TestRepo.update!(schema |> Ecto.Changeset.change, force: true)
+      end
+
+      assert_raise Ecto.NoPrimaryKeyValueError, fn ->
+        schema
+        |> Ecto.Changeset.change()
+        |> TestRepo.update()
+      end
+
+      assert_raise Ecto.NoPrimaryKeyValueError, fn ->
+        TestRepo.delete!(schema)
+      end
+    end
+
+    test "works with custom source schema" do
+      schema = %MySchema{id: 1, x: "abc"} |> put_meta(source: "custom_schema")
+      TestRepo.update!(schema |> Ecto.Changeset.change, force: true)
+      TestRepo.delete!(schema)
+
+      to_insert = %MySchema{x: "abc"} |> put_meta(source: "custom_schema")
+      TestRepo.insert!(to_insert)
+    end
+
+    test "provides meaningful error messages on dump error" do
+      defmodule DumpSchema do
+        use Ecto.Schema
+
+        schema "my_schema" do
+          field :d, :decimal
+          field :t, :time
+          field :t_usec, :time_usec
+          field :x, :string
+        end
+      end
+
+      schema = struct(DumpSchema, x: 123)
+
+      assert_raise Ecto.ChangeError, ~r"does not match type :string$", fn ->
+        TestRepo.insert!(schema)
+      end
+    end
+  end
+
+  describe "changeset operations" do
+    test "insert, update, insert_or_update and delete" do
+      valid = Ecto.Changeset.cast(%MySchema{id: 1}, %{x: "foo"}, [:x])
+      assert {:ok, %MySchema{}} = TestRepo.insert(valid)
+      assert {:ok, %MySchema{}} = TestRepo.update(valid)
+      assert {:ok, %MySchema{}} = TestRepo.insert_or_update(valid)
+      assert {:ok, %MySchema{}} = TestRepo.delete(valid)
+    end
+
+    test "insert, update, insert_or_update and delete with virtual field" do
+      valid = Ecto.Changeset.cast(%MySchema{id: 1}, %{w: "foo"}, [:w])
+      assert {:ok, %MySchema{w: "foo"}} = TestRepo.insert(valid)
+      assert {:ok, %MySchema{w: "foo"}} = TestRepo.update(valid)
+      assert {:ok, %MySchema{w: "foo"}} = TestRepo.insert_or_update(valid)
+      assert {:ok, %MySchema{w: "foo"}} = TestRepo.delete(valid)
+    end
+
+    test "insert, update, insert_or_update and delete filters out unknown field" do
+      valid = Ecto.Changeset.change(%MySchema{id: 1})
+      valid = put_in valid.changes[:unknown], "foo"
+
+      assert {:ok, %MySchema{} = inserted} = TestRepo.insert(valid)
+      refute Map.has_key?(inserted, :unknown)
+
+      assert {:ok, %MySchema{} = updated} = TestRepo.update(valid)
+      refute Map.has_key?(updated, :unknown)
+
+      assert {:ok, %MySchema{} = upserted} = TestRepo.insert_or_update(valid)
+      refute Map.has_key?(upserted, :unknown)
+
+      assert {:ok, %MySchema{} = deleted} = TestRepo.delete(valid)
+      refute Map.has_key?(deleted, :unknown)
+    end
+
+    test "insert, update, and delete raises on stale entries" do
+      my_schema = %MySchema{id: 1}
+      my_schema = put_in(my_schema.__meta__.context, {:error, :stale})
+      stale = Ecto.Changeset.cast(my_schema, %{x: "foo"}, [:x])
+
+      assert_raise Ecto.StaleEntryError, fn -> TestRepo.insert(stale) end
+      assert_raise Ecto.StaleEntryError, fn -> TestRepo.update(stale) end
+      assert_raise Ecto.StaleEntryError, fn -> TestRepo.delete(stale) end
+    end
+
+    test "insert, update, and delete adds error to stale error field" do
+      my_schema = %MySchema{id: 1}
+      my_schema = put_in(my_schema.__meta__.context, {:error, :stale})
+      stale = Ecto.Changeset.cast(my_schema, %{x: "foo"}, [:x])
+
+      assert {:error, changeset} = TestRepo.insert(stale, [stale_error_field: :id])
+      assert changeset.errors == [id: {"is stale", [stale: true]}]
+
+      assert {:error, changeset} = TestRepo.update(stale, [stale_error_field: :id])
+      assert changeset.errors == [id: {"is stale", [stale: true]}]
+
+      assert {:error, changeset} = TestRepo.delete(stale, [stale_error_field: :id])
+      assert changeset.errors == [id: {"is stale", [stale: true]}]
+
+      assert_raise Ecto.StaleEntryError, fn -> TestRepo.insert(stale, [stale_error_field: "id"]) end
+    end
+
+    test "insert, update, and delete adds custom stale error message" do
+      my_schema = %MySchema{id: 1}
+      my_schema = put_in(my_schema.__meta__.context, {:error, :stale})
+      stale = Ecto.Changeset.cast(my_schema, %{x: "foo"}, [:x])
+
+      options = [
+        stale_error_field: :id,
+        stale_error_message: "is old"
+      ]
+
+      assert {:error, changeset} = TestRepo.insert(stale, options)
+      assert changeset.errors == [id: {"is old", [stale: true]}]
+
+      assert {:error, changeset} = TestRepo.update(stale, options)
+      assert changeset.errors == [id: {"is old", [stale: true]}]
+
+      assert {:error, changeset} = TestRepo.delete(stale, options)
+      assert changeset.errors == [id: {"is old", [stale: true]}]
+    end
+
+    test "get, get_by, one and all sets schema prefix" do
+      assert schema = TestRepo.get(MySchema, 123, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert schema = TestRepo.get_by(MySchema, [id: 123], prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert schema = TestRepo.one(MySchema, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert [schema] = TestRepo.all(MySchema, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+    end
+
+    test "get, get_by, one and all ignores prefix if schema_prefix set" do
+      assert schema = TestRepo.get(MySchemaWithPrefix, 123, prefix: "public")
+      assert schema.__meta__.prefix == "private"
+
+      assert schema = TestRepo.get_by(MySchemaWithPrefix, [id: 123], prefix: "public")
+      assert schema.__meta__.prefix == "private"
+
+      assert schema = TestRepo.one(MySchemaWithPrefix, prefix: "public")
+      assert schema.__meta__.prefix == "private"
+
+      assert [schema] = TestRepo.all(MySchemaWithPrefix, prefix: "public")
+      assert schema.__meta__.prefix == "private"
+    end
+
+    test "insert and delete sets schema prefix with struct" do
+      valid = %MySchema{id: 1}
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.delete(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+    end
+
+    test "insert and delete prefix overrides schema_prefix with struct" do
+      valid = %MySchemaWithPrefix{id: 1}
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.delete(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+    end
+
+    test "insert, update, insert_or_update and delete sets schema prefix with changeset" do
+      valid = Ecto.Changeset.cast(%MySchema{id: 1}, %{x: "foo"}, [:x])
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.insert_or_update(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.update(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.delete(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+    end
+
+    test "insert, update, insert_or_update and delete prefix overrides schema_prefix" do
+      valid = Ecto.Changeset.cast(%MySchemaWithPrefix{id: 1}, %{x: "foo"}, [:x])
+
+      assert {:ok, schema} = TestRepo.insert(valid)
+      assert schema.__meta__.prefix == "private"
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.insert_or_update(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.update(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.delete(valid, prefix: "public")
+      assert schema.__meta__.prefix == "public"
+    end
+
+    test "insert, update, and delete sets schema prefix from changeset repo opts" do
+      valid =
+        %MySchema{id: 1}
+        |> Ecto.Changeset.cast(%{x: "foo"}, [:x])
+        |> Map.put(:repo_opts, [prefix: "public"])
+
+      assert {:ok, schema} = TestRepo.insert(valid)
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.update(valid)
+      assert schema.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.delete(valid)
+      assert schema.__meta__.prefix == "public"
+    end
+
+    test "insert, update, and delete prefix option overrides repo opts" do
+      valid =
+        %MySchema{id: 1}
+        |> Ecto.Changeset.cast(%{x: "foo"}, [:x])
+        |> Map.put(:repo_opts, [prefix: "public"])
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "private")
+      assert schema.__meta__.prefix == "private"
+
+      assert {:ok, schema} = TestRepo.update(valid, prefix: "private")
+      assert schema.__meta__.prefix == "private"
+
+      assert {:ok, schema} = TestRepo.delete(valid, prefix: "private")
+      assert schema.__meta__.prefix == "private"
+    end
+
+    test "insert, update and insert_or_update parent schema_prefix overrides children schema_prefix" do
+      assert {:ok, schema} = TestRepo.insert(%MyParent{id: 1})
+      assert schema.__meta__.prefix == "private"
+
+      valid =
+        %MySchemaWithAssoc{id: 1}
+        |> TestRepo.preload(:parent)
+        |> Ecto.Changeset.cast(%{parent: %{id: 1}}, [])
+        |> Ecto.Changeset.cast_assoc(:parent)
+
+      assert {:ok, schema} = TestRepo.insert(valid)
+      assert schema.parent.__meta__.prefix == nil
+
+      assert {:ok, schema} = TestRepo.insert_or_update(valid)
+      assert schema.parent.__meta__.prefix == nil
+
+      assert {:ok, schema} = TestRepo.update(valid)
+      assert schema.parent.__meta__.prefix == nil
+    end
+
+    test "insert, update and insert_or_update prefix overrides schema_prefix in associations" do
+      valid =
+        %MySchemaWithAssoc{id: 1}
+        |> TestRepo.preload(:parent)
+        |> Ecto.Changeset.cast(%{parent: %{id: 1}}, [])
+        |> Ecto.Changeset.cast_assoc(:parent)
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "public")
+      assert schema.parent.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.insert_or_update(valid, prefix: "public")
+      assert schema.parent.__meta__.prefix == "public"
+
+      assert {:ok, schema} = TestRepo.update(valid, prefix: "public")
+      assert schema.parent.__meta__.prefix == "public"
+    end
+
+    test "insert, and update prefix option overrides repo opts in associations" do
+      valid =
+        %MySchemaWithAssoc{id: 1}
+        |> TestRepo.preload(:parent)
+        |> Ecto.Changeset.cast(%{parent: %{n: 1}}, [])
+        |> Ecto.Changeset.cast_assoc(:parent)
+
+      valid = put_in(valid.changes.parent.repo_opts, [prefix: "public"])
+
+      assert {:ok, schema} = TestRepo.insert(valid, prefix: "other")
+      assert schema.parent.__meta__.prefix == "other"
+
+      assert {:ok, schema} = TestRepo.update(valid, prefix: "other")
+      assert schema.parent.__meta__.prefix == "other"
+    end
+
+    test "insert, update, insert_or_update and delete errors on invalid changeset" do
+      invalid = %Ecto.Changeset{valid?: false, data: %MySchema{}}
+
+      insert = %{invalid | action: :insert, repo: TestRepo, repo_opts: [prefix: "prefix"]}
+      assert {:error, ^insert} = TestRepo.insert(invalid, prefix: "prefix")
+      assert {:error, ^insert} = TestRepo.insert_or_update(invalid, prefix: "prefix")
+
+      update = %{invalid | action: :update, repo: TestRepo, repo_opts: [prefix: "prefix"]}
+      assert {:error, ^update} = TestRepo.update(invalid, prefix: "prefix")
+
+      delete = %{invalid | action: :delete, repo: TestRepo, repo_opts: [prefix: "prefix"]}
+      assert {:error, ^delete} = TestRepo.delete(invalid, prefix: "prefix")
+
+      ignore = %{invalid | action: :ignore, repo: TestRepo, repo_opts: [prefix: "prefix"]}
+      assert {:error, ^insert} = TestRepo.insert(ignore, prefix: "prefix")
+      assert {:error, ^update} = TestRepo.update(ignore, prefix: "prefix")
+      assert {:error, ^delete} = TestRepo.delete(ignore, prefix: "prefix")
+
+      assert_raise ArgumentError, ~r"a valid changeset with action :ignore was given to Ecto.TestRepo.insert/2", fn ->
+        TestRepo.insert(%{ignore | valid?: true})
+      end
+    end
+
+    test "insert!, update!, insert_or_update! and delete!" do
+      valid = Ecto.Changeset.cast(%MySchema{id: 1}, %{}, [])
+      assert %MySchema{} = TestRepo.insert!(valid)
+      assert %MySchema{} = TestRepo.update!(valid)
+      assert %MySchema{} = TestRepo.insert_or_update!(valid)
+      assert %MySchema{} = TestRepo.delete!(valid)
+    end
+
+    test "insert!, update!, insert_or_update! and delete! fail on invalid changeset" do
+      invalid = %Ecto.Changeset{valid?: false, data: %MySchema{}, types: %{}}
+
+      assert_raise Ecto.InvalidChangesetError,
+                   ~r"could not perform insert because changeset is invalid", fn ->
+        TestRepo.insert!(invalid)
+      end
+
+      assert_raise Ecto.InvalidChangesetError,
+                   ~r"could not perform update because changeset is invalid", fn ->
+        TestRepo.update!(invalid)
+      end
+
+      assert_raise Ecto.InvalidChangesetError,
+                   ~r"could not perform insert because changeset is invalid", fn ->
+        TestRepo.insert_or_update!(invalid)
+      end
+
+      assert_raise Ecto.InvalidChangesetError,
+                   ~r"could not perform delete because changeset is invalid", fn ->
+        TestRepo.delete!(invalid)
+      end
+    end
+
+    test "insert!, update! and delete! fail on changeset without data" do
+      invalid = %Ecto.Changeset{valid?: true, data: nil}
+
+      assert_raise ArgumentError, "cannot insert a changeset without :data", fn ->
+        TestRepo.insert!(invalid)
+      end
+
+      assert_raise ArgumentError, "cannot update a changeset without :data", fn ->
+        TestRepo.update!(invalid)
+      end
+
+      assert_raise ArgumentError, "cannot delete a changeset without :data", fn ->
+        TestRepo.delete!(invalid)
+      end
+    end
+
+    test "insert!, update!, insert_or_update! and delete! fail on changeset with wrong action" do
+      invalid = %Ecto.Changeset{valid?: true, data: %MySchema{id: 123}, action: :other}
+
+      assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.insert/2", fn ->
+        TestRepo.insert!(invalid)
+      end
+
+      assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.update/2", fn ->
+        TestRepo.update!(invalid)
+      end
+
+      assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.insert/2", fn ->
+        TestRepo.insert_or_update!(invalid)
+      end
+
+      assert_raise ArgumentError, "a changeset with action :other was given to Ecto.TestRepo.delete/2", fn ->
+        TestRepo.delete!(invalid)
+      end
+    end
+
+    test "insert_or_update uses the correct action" do
+      built  = Ecto.Changeset.cast(%MySchema{y: "built"}, %{}, [])
+      loaded =
+        %MySchema{y: "loaded"}
+        |> TestRepo.insert!
+        |> Ecto.Changeset.cast(%{y: "updated"}, [:y])
+      assert_received {:insert, _}
+
+      TestRepo.insert_or_update built
+      assert_received {:insert, _}
+
+      TestRepo.insert_or_update loaded
+      assert_received {:update, _}
+    end
+
+    test "insert_or_update fails on invalid states" do
+      deleted =
+        %MySchema{y: "deleted"}
+        |> TestRepo.insert!
+        |> TestRepo.delete!
+        |> Ecto.Changeset.cast(%{y: "updated"}, [:y])
+
+      assert_raise ArgumentError, ~r/the changeset has an invalid state/, fn ->
+        TestRepo.insert_or_update deleted
+      end
+    end
+
+    test "insert_or_update fails when being passed a struct" do
+      assert_raise ArgumentError, ~r/giving a struct to .* is not supported/, fn ->
+        TestRepo.insert_or_update %MySchema{}
+      end
+    end
+  end
+
+  describe "changeset prepare" do
+    defp prepare_changeset() do
+      %MySchema{id: 1}
+      |> Ecto.Changeset.cast(%{x: "one"}, [:x])
+      |> Ecto.Changeset.prepare_changes(fn %{repo: repo} = changeset ->
+            Process.put(:ecto_repo, repo)
+            Process.put(:ecto_counter, 1)
+            changeset
+          end)
+      |> Ecto.Changeset.prepare_changes(fn changeset ->
+            Process.put(:ecto_counter, 2)
+            changeset
+          end)
+    end
+
+    test "does not run transaction without prepare" do
+      TestRepo.insert!(%MySchema{id: 1})
+      refute_received {:transaction, _}
+    end
+
+    test "insert runs prepare callbacks in transaction" do
+      changeset = prepare_changeset()
       TestRepo.insert!(changeset)
+      assert_received {:transaction, _}
+      assert Process.get(:ecto_repo) == TestRepo
+      assert Process.get(:ecto_counter) == 2
     end
 
-    # Raises if action is delete
-    changeset = Ecto.Changeset.change(%MyModel{}, embed: embed_changeset)
-    changeset = put_in(changeset.changes.embed.action, :delete)
-    assert_raise ArgumentError, ~r"got action :delete in changeset for embedded .* while inserting", fn ->
-      TestRepo.insert!(changeset)
-    end
-
-    # Returns error and rollbacks on invalid constraint
-    changeset =
-      put_in(%MyModel{}.__meta__.context, {:invalid, [unique: "my_model_foo_index"]})
-      |> Ecto.Changeset.change(embed: embed_changeset)
-      |> Ecto.Changeset.unique_constraint(:foo)
-    assert {:error, changeset} = TestRepo.insert(changeset)
-    assert_received {:rollback, ^changeset}
-    assert changeset.model.__meta__.state == :built
-    assert changeset.changes.embed
-    refute changeset.valid?
-  end
-
-  test "handles assocs on insert when ok" do
-    assoc = %MyAssoc{x: "xyz"}
-    inserted_assoc = put_in assoc.__meta__.state, :loaded
-
-    changeset = Ecto.Changeset.change(%MyModel{}, assoc: assoc)
-    model = TestRepo.insert!(changeset)
-    assert [{:after_insert, MyModel}, {:after_insert, MyAssoc},
-            {:before_insert, MyAssoc}, {:before_insert, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    id = model.assoc.id
-    assert id
-    assert model.assoc == %{inserted_assoc | id: id, my_model_id: model.id}
-
-    changeset = Ecto.Changeset.change(%MyModel{}, assocs: [assoc])
-    model = TestRepo.insert!(changeset)
-    assert [{:after_insert, MyModel}, {:after_insert, MyAssoc},
-            {:before_insert, MyAssoc}, {:before_insert, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    [%{id: id, my_model_id: model_id}] = model.assocs
-    assert id
-    assert model.id == model_id
-    assert model.assocs == [%{inserted_assoc | id: id, my_model_id: model_id}]
-  end
-
-  test "handles assocs on insert when error" do
-    assoc = %MyAssoc{x: "xyz"}
-    assoc_changeset = Ecto.Changeset.change(assoc)
-
-    # Raises with assocs when inserting model
-    assert_raise ArgumentError, ~r"set for assoc named `assoc`", fn ->
-      TestRepo.insert!(%MyModel{assoc: assoc})
-    end
-
-    assert_raise ArgumentError, ~r"set for assoc named `assocs`", fn ->
-      TestRepo.insert!(%MyModel{assocs: [assoc]})
-    end
-
-    # Raises if action is delete
-    changeset = Ecto.Changeset.change(%MyModel{}, assoc: assoc_changeset)
-    changeset = put_in(changeset.changes.assoc.action, :delete)
-    assert_raise ArgumentError, ~r"got action :delete in changeset for associated .* while inserting", fn ->
-      TestRepo.insert!(changeset)
-    end
-
-    # Returns error and rollbacks on invalid children
-    assoc_changeset = %{Ecto.Changeset.change(assoc) | valid?: false}
-    changeset = Ecto.Changeset.change(%MyModel{}, assoc: assoc_changeset)
-    assert {:error, changeset} = TestRepo.insert(changeset)
-    assert_received {:rollback, ^changeset}
-    refute changeset.valid?
-
-    # Returns error and rollbacks on invalid constraint
-    changeset =
-      put_in(%MyModel{}.__meta__.context, {:invalid, [unique: "my_model_foo_index"]})
-      |> Ecto.Changeset.change(assoc: assoc_changeset)
-      |> Ecto.Changeset.unique_constraint(:foo)
-    assert {:error, changeset} = TestRepo.insert(changeset)
-    assert_received {:rollback, ^changeset}
-    assert changeset.model.__meta__.state == :built
-    assert changeset.changes.assoc
-    refute changeset.valid?
-  end
-
-  test "fails cleanly for bad assocs on insert" do
-    assoc = Ecto.Changeset.change(%MyAssoc{})
-            |> Ecto.Changeset.put_change(:x, "xyz")
-            |> Ecto.Changeset.put_change(:my_model, %MyModel{})
-
-    assert_raise ArgumentError, ~r/cannot insert `my_model` in Ecto.RepoTest.MyAssoc/, fn ->
-      TestRepo.insert!(assoc)
-    end
-  end
-
-  test "handles assocs on insert with assoc constraint error" do
-    assoc_changeset =
-      put_in(%MyAssoc{}.__meta__.context, {:invalid, [unique: "my_assoc_foo_index"]})
-      |> Ecto.Changeset.change
-      |> Ecto.Changeset.unique_constraint(:foo)
-
-    changeset = Ecto.Changeset.change(%MyModel{}, assoc: assoc_changeset)
-    assert {:error, changeset} = TestRepo.insert(changeset)
-    assert changeset.model.__meta__.state == :built
-    assert changeset.changes.assoc
-    refute changeset.valid?
-
-    # Just one transaction was used
-    assert_received {:transaction, _}
-    assert_received {:rollback, ^changeset}
-    refute_received {:transaction, _}
-    refute_received {:rollback, _}
-  end
-
-  test "handles nested embeds on insert" do
-    sub_embed = %SubEmbed{y: "xyz"}
-    embed = Ecto.Changeset.change(%MyEmbed{x: "xyz"}, sub_embed: sub_embed)
-    changeset = Ecto.Changeset.change(%MyModel{}, embed: embed)
-    model = TestRepo.insert!(changeset)
-    id = model.embed.sub_embed.id
-    assert id
-    assert model.embed.sub_embed == %{sub_embed | id: id}
-  end
-
-  test "handles nested assocs on insert" do
-    sub_assoc = %SubAssoc{y: "xyz"}
-    inserted_assoc = put_in sub_assoc.__meta__.state, :loaded
-
-    assoc = Ecto.Changeset.change(%MyAssoc{x: "xyz"}, sub_assoc: sub_assoc)
-    changeset = Ecto.Changeset.change(%MyModel{}, assoc: assoc)
-    model = TestRepo.insert!(changeset)
-    id = model.assoc.sub_assoc.id
-    assert id
-    assert model.assoc.sub_assoc == %{inserted_assoc | id: id, my_assoc_id: model.assoc.id}
-
-    # Just one transaction was used
-    assert_received {:transaction, _}
-    refute_received {:rollback, _}
-
-    sub_assoc_change = %{Ecto.Changeset.change(sub_assoc) | valid?: false}
-    assoc = Ecto.Changeset.change(%MyAssoc{x: "xyz"}, sub_assoc: sub_assoc_change)
-    changeset = Ecto.Changeset.change(%MyModel{}, assoc: assoc)
-    assert {:error, changeset} = TestRepo.insert(changeset)
-    refute changeset.changes.id
-    refute changeset.changes.assoc.changes.id
-    refute changeset.changes.assoc.changes.my_model_id
-    refute changeset.changes.assoc.changes.sub_assoc.changes.id
-    refute changeset.changes.assoc.changes.sub_assoc.changes.my_assoc_id
-    refute changeset.valid?
-
-    # Just one transaction was used
-    assert_received {:transaction, _}
-    assert_received {:rollback, ^changeset}
-    refute_received {:transaction, _}
-    refute_received {:rollback, _}
-  end
-
-  test "skips embeds on update when not changing" do
-    embed = %MyEmbed{x: "xyz"}
-
-    # If embed is not in changeset, embeds are left out
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, x: "abc")
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embed == embed
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embeds: [embed]}, x: "abc")
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embeds == [embed]
-  end
-
-  test "skips assocs on update when not changing" do
-    assoc = %MyAssoc{x: "xyz"}
-
-    # If assoc is not in changeset, assocs are left out
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, x: "abc")
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assoc == assoc
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assocs: [assoc]}, x: "abc")
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assocs == [assoc]
-  end
-
-  test "inserting embeds on update" do
-    embed = %MyEmbed{x: "xyz"}
-
-    # Inserting the embed
-    changeset = Ecto.Changeset.change(%MyModel{id: 1}, embed: embed)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_insert, MyEmbed},
-            {:before_insert, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    id = model.embed.id
-    assert id
-    assert model.embed == %{embed | id: id}
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1}, embeds: [embed])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_insert, MyEmbed},
-            {:before_insert, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    [%{id: id}] = model.embeds
-    assert id
-    assert model.embeds == [%{embed | id: id}]
-
-    embed = %{embed | id: @uuid}
-
-    # Replacing embed with a new one
-    new_embed = %MyEmbed{x: "abc"}
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, embed: new_embed)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed}, {:after_insert, MyEmbed},
-            {:before_insert, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    id = model.embed.id
-    assert id
-    assert model.embed == %{new_embed | id: id}
-
-    # Replacing embed with nil
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, embed: nil)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    refute model.embed
-  end
-
-  test "inserting assocs on update" do
-    assoc = %MyAssoc{x: "xyz"}
-    inserted_assoc = put_in assoc.__meta__.state, :loaded
-
-    # Inserting the assoc
-    changeset = Ecto.Changeset.change(%MyModel{id: 1}, assoc: assoc)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_insert, MyAssoc},
-            {:before_insert, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    id = model.assoc.id
-    assert id
-    assert model.assoc == %{inserted_assoc | id: id, my_model_id: model.id}
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1}, assocs: [assoc])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_insert, MyAssoc},
-            {:before_insert, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    [%{id: id}] = model.assocs
-    assert id
-    assert model.assocs == [%{inserted_assoc | id: id, my_model_id: model.id}]
-
-    assoc = %{assoc | id: 1}
-
-    # Replacing assoc with a new one
-    new_assoc = %MyAssoc{x: "abc"}
-    inserted_assoc = put_in new_assoc.__meta__.state, :loaded
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: new_assoc)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyAssoc},
-            {:before_delete, MyAssoc}, {:after_insert, MyAssoc},
-            {:before_insert, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    %{id: id, my_model_id: model_id} = model.assoc
-    assert model_id == model.id
-    assert model.assoc == %{inserted_assoc | my_model_id: model_id, id: id}
-
-    # Replacing assoc with nil
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: nil)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyAssoc},
-            {:before_delete, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    refute model.assoc
-  end
-
-  test "changing embeds on update" do
-    embed = %MyEmbed{x: "xyz"}
-
-    # Raises if there's no id
-    embed_changeset = Ecto.Changeset.change(embed, x: "abc")
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, embed: embed_changeset)
-    assert_raise Ecto.NoPrimaryKeyValueError, fn ->
+    test "update runs prepare callbacks in transaction" do
+      changeset = prepare_changeset()
       TestRepo.update!(changeset)
+      assert_received {:transaction, _}
+      assert Process.get(:ecto_repo) == TestRepo
+      assert Process.get(:ecto_counter) == 2
     end
 
-    embed = %{embed | id: @uuid}
-
-    # Changing the embed
-    embed_changeset = Ecto.Changeset.change(embed, x: "abc")
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed},
-                                      embed: embed_changeset)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_update, MyEmbed},
-            {:before_update, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embed == %{embed | x: "abc"}
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embeds: [embed]},
-                                      embeds: [embed_changeset])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_update, MyEmbed},
-            {:before_update, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embeds == [%{embed | x: "abc"}]
-
-    # With no changes
-    no_changes = Ecto.Changeset.change(embed)
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed},
-                                      embed: no_changes, x: "abc")
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embed == embed
-
-    changes = Ecto.Changeset.change(embed, x: "abc")
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embeds: [embed]},
-                                      embeds: [no_changes, changes])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_insert, MyEmbed},
-            {:before_insert, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embeds == [embed, %{embed | x: "abc"}]
-  end
-
-  test "changing assocs on update" do
-    assoc = %MyAssoc{x: "xyz"}
-
-    # Raises if there's no id
-    assoc_changeset = Ecto.Changeset.change(assoc, x: "abc")
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: assoc_changeset)
-    assert_raise Ecto.NoPrimaryKeyValueError, fn ->
-      TestRepo.update!(changeset)
+    test "delete runs prepare callbacks in transaction" do
+      changeset = prepare_changeset()
+      TestRepo.delete!(changeset)
+      assert_received {:transaction, _}
+      assert Process.get(:ecto_repo) == TestRepo
+      assert Process.get(:ecto_counter) == 2
     end
 
-    assoc = %{assoc | id: 1}
-    inserted_assoc = %{assoc | my_model_id: 1}
-    inserted_assoc = put_in inserted_assoc.__meta__.state, :loaded
+    test "on embeds" do
+      embed_changeset =
+        %MyEmbed{}
+        |> Ecto.Changeset.cast(%{x: "one"}, [:x])
+        |> Ecto.Changeset.prepare_changes(fn %{repo: repo} = changeset ->
+          Process.put(:ecto_repo, repo)
+          Process.put(:ecto_counter, 1)
+          changeset
+        end)
+        |> Ecto.Changeset.prepare_changes(fn changeset ->
+          1 = Process.get(:ecto_counter)
+          Process.put(:ecto_counter, 2)
+          Ecto.Changeset.update_change(changeset, :x, &String.upcase/1)
+        end)
 
-    # Changing the assoc
-    assoc_changeset = Ecto.Changeset.change(inserted_assoc, x: "abc")
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: inserted_assoc},
-                                      assoc: assoc_changeset)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_update, MyAssoc},
-            {:before_update, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assoc == %{inserted_assoc | x: "abc"}
+      changeset =
+        %MySchemaWithEmbed{id: 1}
+        |> Ecto.Changeset.cast(%{x: "one"}, [:x])
+        |> Ecto.Changeset.put_embed(:embeds, [embed_changeset])
 
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assocs: [inserted_assoc]},
-                                      assocs: [assoc_changeset])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_update, MyAssoc},
-            {:before_update, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assocs == [%{inserted_assoc | x: "abc"}]
-
-    # With no changes
-    no_changes = Ecto.Changeset.change(inserted_assoc)
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: inserted_assoc},
-                                      assoc: no_changes, x: "abc")
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assoc == inserted_assoc
-
-    new_changeset = Ecto.Changeset.change(assoc, x: "abc")
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assocs: [inserted_assoc]},
-                                      assocs: [no_changes, new_changeset])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_insert, MyAssoc},
-            {:before_insert, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assocs == [inserted_assoc, %{inserted_assoc | x: "abc"}]
+      %MySchemaWithEmbed{embeds: [embed]} = TestRepo.insert!(changeset)
+      assert embed.x == "ONE"
+      assert_received {:transaction, _}
+      assert Process.get(:ecto_repo) == TestRepo
+      assert Process.get(:ecto_counter) == 2
+    end
   end
 
-  test "removing embeds on update" do
-    embed = %MyEmbed{x: "xyz"}
-
-    # Raises if there's no id
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, embed: nil)
-    assert_raise Ecto.NoPrimaryKeyValueError, fn ->
-      TestRepo.update!(changeset)
+  describe "changeset constraints" do
+    test "are mapped to repo constraint violations" do
+      my_schema = %MySchema{id: 1}
+      changeset =
+        put_in(my_schema.__meta__.context, {:invalid, [unique: "custom_foo_index"]})
+        |> Ecto.Changeset.change(x: "foo")
+        |> Ecto.Changeset.unique_constraint(:foo, name: "custom_foo_index")
+      assert {:error, changeset} = TestRepo.insert(changeset)
+      refute changeset.valid?
     end
 
-    embed = %{embed | id: @uuid}
-
-    # Deleting the embed
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, embed: nil)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embed == nil
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embeds: [embed]}, embeds: [])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embeds == []
-  end
-
-  test "removing assocs on update" do
-    assoc = %MyAssoc{x: "xyz"}
-
-    # Raises if there's no id
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: nil)
-    assert_raise Ecto.NoPrimaryKeyValueError, fn ->
-      TestRepo.update!(changeset)
+    test "are mapped to repo constraint violation using suffix match" do
+      my_schema = %MySchema{id: 1}
+      changeset =
+        put_in(my_schema.__meta__.context, {:invalid, [unique: "foo_table_custom_foo_index"]})
+        |> Ecto.Changeset.change(x: "foo")
+        |> Ecto.Changeset.unique_constraint(:foo, name: "custom_foo_index", match: :suffix)
+      assert {:error, changeset} = TestRepo.insert(changeset)
+      refute changeset.valid?
     end
 
-    assoc = %{assoc | id: 1}
+    test "are mapped to repo constraint violation using prefix match" do
+      my_schema = %MySchema{id: 1}
+      changeset =
+        put_in(my_schema.__meta__.context, {:invalid, [unique: "foo_table_custom_foo_index"]})
+        |> Ecto.Changeset.change(x: "foo")
+        |> Ecto.Changeset.unique_constraint(:foo, name: "foo_table_custom_foo", match: :prefix)
+      assert {:error, changeset} = TestRepo.insert(changeset)
+      refute changeset.valid?
+    end
 
-    # Deleting the assoc
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: nil)
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyAssoc},
-            {:before_delete, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assoc == nil
+    test "may fail to map to repo constraint violation on name" do
+      my_schema = %MySchema{id: 1}
+      changeset =
+        put_in(my_schema.__meta__.context, {:invalid, [unique: "foo_table_custom_foo_index"]})
+        |> Ecto.Changeset.change(x: "foo")
+        |> Ecto.Changeset.unique_constraint(:foo, name: "custom_foo_index")
+      assert_raise Ecto.ConstraintError, fn ->
+        TestRepo.insert(changeset)
+      end
+    end
 
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assocs: [assoc]}, assocs: [])
-    model = TestRepo.update!(changeset)
-    assert [{:after_update, MyModel}, {:after_delete, MyAssoc},
-            {:before_delete, MyAssoc}, {:before_update, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.assocs == []
+    test "may fail to map to repo constraint violation on index type" do
+      my_schema = %MySchema{id: 1}
+      changeset =
+        put_in(my_schema.__meta__.context, {:invalid, [invalid_constraint_type: "my_schema_foo_index"]})
+        |> Ecto.Changeset.change(x: "foo")
+        |> Ecto.Changeset.unique_constraint(:foo)
+      assert_raise Ecto.ConstraintError, fn ->
+        TestRepo.insert(changeset)
+      end
+    end
   end
 
-  test "handles embeds on update when error" do
-    embed = %MyEmbed{x: "xyz"}
+  describe "on conflict" do
+    test "passes all fields on replace_all" do
+      fields = [:id, :x, :yyy, :z, :array, :map]
+      TestRepo.insert(%MySchema{id: 1}, on_conflict: :replace_all)
+      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], []}}}
+    end
 
-    # Returns error and rollbacks on invalid constraint
-    embed_changeset = Ecto.Changeset.change(embed)
-    my_model = %MyModel{id: 1, embed: nil}
-    changeset =
-      put_in(my_model.__meta__.context, {:invalid, [unique: "my_model_foo_index"]})
-      |> Ecto.Changeset.change(embed: embed_changeset, x: "foo")
-      |> Ecto.Changeset.unique_constraint(:foo)
-    assert {:error, changeset} = TestRepo.update(changeset)
-    assert_received {:rollback, ^changeset}
-    assert changeset.changes.embed
-    refute changeset.valid?
+    test "passes all fields+embeds on replace_all" do
+      fields = [:id, :x, :embeds]
+      TestRepo.insert(%MySchemaWithEmbed{id: 1}, on_conflict: :replace_all)
+      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], []}}}
+    end
+
+    test "replaces specified fields on replace" do
+      fields = [:x, :yyy]
+      TestRepo.insert(
+        %MySchema{id: 1},
+        on_conflict: {:replace, [:x, :y]},
+        conflict_target: [:id]
+      )
+      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], [:id]}}}
+    end
+
+    test "replaces specified fields on replace without a schema" do
+      fields = [:x, :yyy]
+      rows = [[id: 1, x: "x", yyy: "yyy"]]
+      TestRepo.insert_all(
+        "my_schema",
+        rows,
+        on_conflict: {:replace, [:x, :yyy]},
+        conflict_target: [:id]
+      )
+      assert_received {:insert_all, %{source: "my_schema", on_conflict: {^fields, [], [:id]}}, ^rows}
+    end
+
+    test "raises on non-existent fields on replace" do
+      assert_raise ArgumentError, "unknown field for :on_conflict, got: :unknown", fn ->
+        TestRepo.insert(
+          %MySchema{id: 1},
+          on_conflict: {:replace, [:unknown]},
+          conflict_target: [:id]
+        )
+      end
+    end
+
+    test "passes all fields except primary keys on replace_all_except_primary_keys" do
+      fields = [:x, :yyy, :z, :array, :map]
+      TestRepo.insert(%MySchema{id: 1}, on_conflict: :replace_all_except_primary_key)
+      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], []}}}
+    end
+
+    test "converts keyword list into query" do
+      TestRepo.insert(%MySchema{id: 1}, on_conflict: [set: [x: "123", y: "456"]])
+      assert_received {:insert, %{source: "my_schema", on_conflict: {query, ["123", "456"], []}}}
+      assert %Ecto.Query{} = query
+      assert hd(query.updates).expr == [set: [x: {:^, [], [2]}, yyy: {:^, [], [3]}]]
+    end
+
+    test "does not pass on_conflict to children" do
+      TestRepo.insert(%MySchemaWithAssoc{id: 1, parent: %MyParent{}}, on_conflict: :replace_all)
+      assert_received {:insert, %{source: "my_schema", on_conflict: {_, _, _}}}
+      assert_received {:insert, %{source: "my_parent", on_conflict: {:raise, _, _}}}
+    end
+
+    test "raises on unknown on_conflict value" do
+      assert_raise ArgumentError, "unknown value for :on_conflict, got: :who_knows", fn ->
+        TestRepo.insert(%MySchema{id: 1}, on_conflict: :who_knows)
+      end
+    end
+
+    test "raises on non-empty conflict_target with on_conflict raise" do
+      assert_raise ArgumentError, ":conflict_target option is forbidden when :on_conflict is :raise", fn ->
+        TestRepo.insert(%MySchema{id: 1}, on_conflict: :raise, conflict_target: [:id])
+      end
+    end
+
+    test "raises on empty conflict_target with on_conflict replace" do
+      assert_raise ArgumentError, ":conflict_target option is required when :on_conflict is replace", fn ->
+        TestRepo.insert(%MySchema{id: 1}, on_conflict: {:replace, []})
+      end
+    end
+
+    test "raises on query mismatch" do
+      assert_raise ArgumentError, ~r"cannot run on_conflict: query", fn ->
+        query = from p in "posts"
+        TestRepo.insert(%MySchema{id: 1}, on_conflict: query)
+      end
+    end
   end
 
-  test "handles assocs on update when error" do
-    assoc = %MyAssoc{x: "xyz"}
-
-    # Returns error and rollbacks on invalid children
-    assoc_changeset = %{Ecto.Changeset.change(assoc) | valid?: false}
-    changeset = Ecto.Changeset.change(%MyModel{id: 1}, assoc: assoc_changeset)
-    assert {:error, changeset} = TestRepo.update(changeset)
-    assert_received {:rollback, ^changeset}
-    refute changeset.valid?
-
-    # Returns error and rollbacks on invalid constraint
-    assoc_changeset = Ecto.Changeset.change(assoc)
-    my_model = %MyModel{id: 1, assoc: nil}
-    changeset =
-      put_in(my_model.__meta__.context, {:invalid, [unique: "my_model_foo_index"]})
-      |> Ecto.Changeset.change(assoc: assoc_changeset, x: "foo")
-      |> Ecto.Changeset.unique_constraint(:foo)
-    assert {:error, changeset} = TestRepo.update(changeset)
-    assert_received {:rollback, ^changeset}
-    assert changeset.changes.assoc
-    refute changeset.valid?
+  describe "preload" do
+    test "returns nil if first argument of preload is nil" do
+      assert TestRepo.preload(nil, []) == nil
+    end
   end
 
-  test "handles nested embeds on update" do
-    sub_embed = %SubEmbed{y: "xyz"}
-    embed = %MyEmbed{id: @uuid, x: "xyz"}
-    embed_changeset = Ecto.Changeset.change(embed, sub_embed: sub_embed)
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed}, embed: embed_changeset)
-    model = TestRepo.update!(changeset)
-    id = model.embed.sub_embed.id
-    assert model.embed.sub_embed == %{sub_embed | id: id}
+  describe "checkout" do
+    test "checks out a connection" do
+      fun = fn -> :done end
+      assert TestRepo.checkout(fun) == :done
+      assert_received {:checkout, ^fun}
+    end
   end
 
-  test "handles nested assocs on update" do
-    sub_assoc = %SubAssoc{y: "xyz"}
-    inserted_assoc = put_in sub_assoc.__meta__.state, :loaded
+  describe "custom type as primary key" do
+    defmodule PrefixedID do
+      use Ecto.Type
+      def type(), do: :binary_id
+      def cast("foo-" <> _ = id), do: {:ok, id}
+      def cast(id), do: {:ok, "foo-" <> id}
+      def load(uuid), do: {:ok, "foo-" <> uuid}
+      def dump("foo-" <> uuid), do: {:ok, uuid}
+      def dump(_uuid), do: :error
+    end
 
-    assoc = %MyAssoc{id: 1, x: "xyz"}
-    assoc_changeset = Ecto.Changeset.change(assoc, sub_assoc: sub_assoc)
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: assoc_changeset)
-    model = TestRepo.update!(changeset)
-    id = model.assoc.sub_assoc.id
-    assert model.assoc.sub_assoc == %{inserted_assoc | id: id, my_assoc_id: model.assoc.id}
+    defmodule MySchemaCustomPK do
+      use Ecto.Schema
 
-    # One transaction was used
-    assert_received {:transaction, _}
-    refute_received {:rollback, _}
+      @primary_key {:id, PrefixedID, autogenerate: true}
+      schema "" do
+      end
+    end
 
-    sub_assoc_change = %{Ecto.Changeset.change(sub_assoc) | valid?: false}
-    assoc = %MyAssoc{id: 1, x: "xyz"}
-    assoc_changeset = Ecto.Changeset.change(assoc, sub_assoc: sub_assoc_change)
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, assoc: assoc}, assoc: assoc_changeset)
-    assert {:error, changeset} = TestRepo.update(changeset)
-    refute changeset.changes.assoc.changes.sub_assoc.changes.id
-    refute changeset.changes.assoc.changes.sub_assoc.changes.my_assoc_id
-    refute changeset.valid?
+    test "autogenerates value" do
+      assert {:ok, inserted} = TestRepo.insert(%MySchemaCustomPK{})
+      assert "foo-" <> _uuid = inserted.id
+    end
 
-    # Just one transaction was used
-    assert_received {:transaction, _}
-    assert_received {:rollback, ^changeset}
-    refute_received {:transaction, _}
-    refute_received {:rollback, _}
+    test "custom value" do
+      id = "a92f6d0e-52ef-4df8-808b-32d8ef037d48"
+      changeset = Ecto.Changeset.cast(%MySchemaCustomPK{}, %{id: id}, [:id])
+
+      assert {:ok, inserted} = TestRepo.insert(changeset)
+      assert inserted.id == "foo-" <> id
+    end
   end
 
-  test "handles embeds on delete" do
-    embed = %MyEmbed{id: @uuid, x: "xyz"}
+  describe "transactions" do
+    defmodule NoTransactionAdapter do
+      @behaviour Ecto.Adapter
+      defmacro __before_compile__(_opts), do: :ok
+      def dumpers(_, _), do: raise "not implemented"
+      def loaders(_, _), do: raise "not implemented"
+      def init(_), do: raise "not implemented"
+      def checkout(_, _, _), do: raise "not implemented"
+      def ensure_all_started(_, _), do: raise "not implemented"
+    end
 
-    # With model runs all callbacks
-    model = TestRepo.delete!(%MyModel{id: 1, embed: embed})
-    assert [{:after_delete, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed},{:before_delete, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embed == embed
+    defmodule NoTransactionRepo do
+      use Ecto.Repo, otp_app: :ecto, adapter: NoTransactionAdapter
+    end
 
-    model = TestRepo.delete!(%MyModel{id: 1, embeds: [embed]})
-    assert [{:after_delete, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed},{:before_delete, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embeds == [embed]
-
-    # With changeset runs all callbacks
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embed: embed})
-    model = TestRepo.delete!(changeset)
-    assert [{:after_delete, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed},{:before_delete, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embed == embed
-
-    changeset = Ecto.Changeset.change(%MyModel{id: 1, embeds: [embed]})
-    model = TestRepo.delete!(changeset)
-    assert [{:after_delete, MyModel}, {:after_delete, MyEmbed},
-            {:before_delete, MyEmbed},{:before_delete, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
-    assert model.embeds == [embed]
+    test "no transaction functions generated on repo without adapter support" do
+      assert function_exported?(NoTransactionRepo, :config, 0)
+      refute function_exported?(NoTransactionRepo, :transaction, 2)
+      refute function_exported?(NoTransactionRepo, :in_transaction?, 2)
+      refute function_exported?(NoTransactionRepo, :rollback, 1)
+    end
   end
 
-  test "handles nested embeds on delete" do
-    sub_embed = %SubEmbed{id: @uuid, y: "xyz"}
-    embed = %MyEmbed{id: @uuid, x: "xyz", sub_embed: sub_embed}
-    TestRepo.delete!(%MyModel{id: 1, embed: embed})
-    assert [{:after_delete, MyModel}, {:after_delete, MyEmbed},
-            {:after_delete, SubEmbed}, {:before_delete, SubEmbed},
-            {:before_delete, MyEmbed}, {:before_delete, MyModel} | _] =
-      Agent.get(CallbackAgent, &get_models/1)
+  describe "dynamic repo" do
+    setup do
+      {:ok, pid} = TestRepo.start_link(name: nil)
+      TestRepo = TestRepo.put_dynamic_repo(pid)
+      :ok
+    end
+
+    test "puts the dynamic repo in pdict" do
+      assert is_pid TestRepo.get_dynamic_repo()
+
+      assert Task.async(fn -> TestRepo.get_dynamic_repo() end) |> Task.await() ==
+               TestRepo
+    end
+
+    test "keeps the proper repo in prepare_changes callback" do
+      %MySchema{id: 1}
+      |> Ecto.Changeset.cast(%{x: "one"}, [:x])
+      |> Ecto.Changeset.prepare_changes(fn changeset ->
+        Process.put(:ecto_prepared, true)
+        assert changeset.repo == TestRepo
+        changeset
+      end)
+      |> TestRepo.insert!()
+
+      assert Process.get(:ecto_prepared)
+    end
+
+    test "keeps the proper repo in  multi" do
+      fun = fn repo, _changes -> {:ok, repo} end
+      multi = Ecto.Multi.new |> Ecto.Multi.run(:run, fun)
+      assert {:ok, changes} = TestRepo.transaction(multi)
+      assert changes.run == TestRepo
+    end
+
+    test "accepts a default dynamic repo compile-time option" do
+      defmodule CustomDynamicRepo do
+        use Ecto.Repo, otp_app: :ecto, adapter: Ecto.TestAdapter, default_dynamic_repo: :other
+      end
+
+      assert CustomDynamicRepo.get_dynamic_repo() == :other
+    end
+  end
+
+  describe "read-only repo" do
+    test "accepts a read-only compile-time option" do
+      defmodule ReadOnlyRepo do
+        use Ecto.Repo, otp_app: :ecto, adapter: Ecto.TestAdapter, read_only: true
+      end
+
+      refute function_exported?(ReadOnlyRepo, :insert, 2)
+      refute function_exported?(ReadOnlyRepo, :update, 2)
+      refute function_exported?(ReadOnlyRepo, :delete, 2)
+      refute function_exported?(ReadOnlyRepo, :insert_all, 3)
+      refute function_exported?(ReadOnlyRepo, :update_all, 3)
+      refute function_exported?(ReadOnlyRepo, :delete_all, 2)
+    end
   end
 end

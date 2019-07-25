@@ -5,6 +5,20 @@ defmodule Ecto.Query.CompileError do
   defexception [:message]
 end
 
+defmodule Ecto.Query.CastError do
+  @moduledoc """
+  Raised at runtime when a value cannot be cast.
+  """
+  defexception [:type, :value, :message]
+
+  def exception(opts) do
+    value = Keyword.fetch!(opts, :value)
+    type  = Keyword.fetch!(opts, :type)
+    msg   = Keyword.fetch!(opts, :message)
+    %__MODULE__{value: value, type: type, message: msg}
+  end
+end
+
 defmodule Ecto.QueryError do
   @moduledoc """
   Raised at runtime when the query is invalid.
@@ -20,12 +34,42 @@ defmodule Ecto.QueryError do
     #{Inspect.Ecto.Query.to_string(query)}
     """
 
-    if (file = opts[:file]) && (line = opts[:line]) do
-      relative = Path.relative_to_cwd(file)
-      message  = Exception.format_file_line(relative, line) <> " " <> message
-    end
+    file = opts[:file]
+    line = opts[:line]
+
+    message =
+      if file && line do
+        relative = Path.relative_to_cwd(file)
+        Exception.format_file_line(relative, line) <> " " <> message
+      else
+        message
+      end
 
     %__MODULE__{message: message}
+  end
+end
+
+defmodule Ecto.SubQueryError do
+  @moduledoc """
+  Raised at runtime when a subquery is invalid.
+  """
+  defexception [:message, :exception]
+
+  def exception(opts) do
+    exception = Keyword.fetch!(opts, :exception)
+    query     = Keyword.fetch!(opts, :query)
+
+    message = """
+    the following exception happened when compiling a subquery.
+
+        #{Exception.format(:error, exception, []) |> String.replace("\n", "\n    ")}
+
+    The subquery originated from the following query:
+
+    #{Inspect.Ecto.Query.to_string(query)}
+    """
+
+    %__MODULE__{message: message, exception: exception}
   end
 end
 
@@ -37,37 +81,63 @@ defmodule Ecto.InvalidChangesetError do
   defexception [:action, :changeset]
 
   def message(%{action: action, changeset: changeset}) do
+    changes = extract_changes(changeset)
+    errors = Ecto.Changeset.traverse_errors(changeset, & &1)
+
     """
     could not perform #{action} because changeset is invalid.
 
-    * Changeset changes
+    Errors
 
-    #{inspect changeset.changes}
+    #{pretty errors}
 
-    * Changeset params
+    Applied changes
 
-    #{inspect changeset.params}
+    #{pretty changes}
 
-    * Changeset errors
+    Params
 
-    #{inspect changeset.errors}
+    #{pretty changeset.params}
+
+    Changeset
+
+    #{pretty changeset}
     """
   end
+
+  defp pretty(term) do
+    inspect(term, pretty: true)
+    |> String.split("\n")
+    |> Enum.map_join("\n", &"    " <> &1)
+  end
+
+  defp extract_changes(%Ecto.Changeset{changes: changes}) do
+    Enum.reduce(changes, %{}, fn({key, value}, acc) ->
+      case value do
+        %Ecto.Changeset{action: :delete} -> acc
+        _ -> Map.put(acc, key, extract_changes(value))
+      end
+    end)
+  end
+  defp extract_changes([%Ecto.Changeset{action: :delete} | tail]),
+    do: extract_changes(tail)
+  defp extract_changes([%Ecto.Changeset{} = changeset | tail]),
+    do: [extract_changes(changeset) | extract_changes(tail)]
+  defp extract_changes(other),
+    do: other
 end
 
 defmodule Ecto.CastError do
   @moduledoc """
-  Raised at runtime when a value cannot be cast.
+  Raised when a changeset can't cast a value.
   """
-  defexception [:model, :field, :type, :value, :message]
+  defexception [:message, :type, :value]
 
   def exception(opts) do
-    model = Keyword.fetch!(opts, :model)
-    field = Keyword.fetch!(opts, :field)
-    value = Keyword.fetch!(opts, :value)
     type  = Keyword.fetch!(opts, :type)
-    msg   = Keyword.fetch!(opts, :message)
-    %__MODULE__{model: model, field: field, value: value, type: type, message: msg}
+    value = Keyword.fetch!(opts, :value)
+    msg   = opts[:message] || "cannot cast #{inspect value} to #{inspect type}"
+    %__MODULE__{message: msg, type: type, value: value}
   end
 end
 
@@ -85,21 +155,21 @@ end
 defmodule Ecto.NoPrimaryKeyFieldError do
   @moduledoc """
   Raised at runtime when an operation that requires a primary key is invoked
-  with a model that does not define a primary key by using `@primary_key false`
+  with a schema that does not define a primary key by using `@primary_key false`
   """
-  defexception [:message, :model]
+  defexception [:message, :schema]
 
   def exception(opts) do
-    model   = Keyword.fetch!(opts, :model)
-    message = "model `#{inspect model}` has no primary key"
-    %__MODULE__{message: message, model: model}
+    schema  = Keyword.fetch!(opts, :schema)
+    message = "schema `#{inspect schema}` has no primary key"
+    %__MODULE__{message: message, schema: schema}
   end
 end
 
 defmodule Ecto.NoPrimaryKeyValueError do
   @moduledoc """
   Raised at runtime when an operation that requires a primary key is invoked
-  with a model missing value for it's primary key
+  with a schema missing value for its primary key
   """
   defexception [:message, :struct]
 
@@ -109,7 +179,6 @@ defmodule Ecto.NoPrimaryKeyValueError do
     %__MODULE__{message: message, struct: struct}
   end
 end
-
 
 defmodule Ecto.ChangeError do
   defexception [:message]
@@ -148,21 +217,45 @@ defmodule Ecto.MultipleResultsError do
   end
 end
 
+defmodule Ecto.MultiplePrimaryKeyError do
+  defexception [:message]
+
+  def exception(opts) do
+    operation = Keyword.fetch!(opts, :operation)
+    source = Keyword.fetch!(opts, :source)
+    params = Keyword.fetch!(opts, :params)
+    count = Keyword.fetch!(opts, :count)
+
+    msg = """
+    expected #{operation} on #{source} to return at most one entry but got #{count} entries.
+
+    This typically means the field(s) set as primary_key in your schema/source
+    are not enough to uniquely identify entries in the repository.
+
+    Those are the parameters sent to the repository:
+
+    #{inspect params}
+    """
+
+    %__MODULE__{message: msg}
+  end
+end
+
 defmodule Ecto.MigrationError do
   defexception [:message]
 end
 
-defmodule Ecto.StaleModelError do
+defmodule Ecto.StaleEntryError do
   defexception [:message]
 
   def exception(opts) do
     action = Keyword.fetch!(opts, :action)
-    model = Keyword.fetch!(opts, :model)
+    struct = Keyword.fetch!(opts, :struct)
 
     msg = """
-    attempted to #{action} a stale model:
+    attempted to #{action} a stale struct:
 
-    #{inspect model}
+    #{inspect struct}
     """
 
     %__MODULE__{message: msg}
@@ -184,17 +277,20 @@ defmodule Ecto.ConstraintError do
           "The changeset has not defined any constraint."
         constraints ->
           "The changeset defined the following constraints:\n\n" <>
-            Enum.map_join(constraints, "\n", &"    * #{&1.type}: #{&1.constraint}")
+            Enum.map_join(constraints, "\n", &"    * #{&1.constraint} (#{&1.type}_constraint)")
       end
 
     msg = """
-    constraint error when attempting to #{action} model:
+    constraint error when attempting to #{action} struct:
 
-        * #{type}: #{constraint}
+        * #{constraint} (#{type}_constraint)
 
-    If you would like to convert this constraint into an error, please
-    call #{type}_constraint/3 in your changeset and define the proper
-    constraint name. #{constraints}
+    If you would like to stop this constraint violation from raising an
+    exception and instead add it as an error to your changeset, please
+    call `#{type}_constraint/3` on your changeset with the constraint
+    `:name` as an option.
+
+    #{constraints}
     """
 
     %__MODULE__{message: msg, type: type, constraint: constraint}

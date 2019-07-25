@@ -1,3 +1,5 @@
+import Kernel, except: [apply: 2]
+
 defmodule Ecto.Query.Builder.Distinct do
   @moduledoc false
 
@@ -6,28 +8,34 @@ defmodule Ecto.Query.Builder.Distinct do
   @doc """
   Escapes a list of quoted expressions.
 
-      iex> escape(quote do true end, [], __ENV__)
-      {true, %{}}
+      iex> escape(quote do true end, {[], :acc}, [], __ENV__)
+      {true, {[], :acc}}
 
-      iex> escape(quote do [x.x, 13] end, [x: 0], __ENV__)
-      {[{:{}, [], [{:{}, [], [:., [], [{:{}, [], [:&, [], [0]]}, :x]]}, [], []]},
-        13],
-       %{}}
+      iex> escape(quote do [x.x, 13] end, {[], :acc}, [x: 0], __ENV__)
+      {[asc: {:{}, [], [{:{}, [], [:., [], [{:{}, [], [:&, [], [0]]}, :x]]}, [], []]},
+        asc: 13],
+       {[], :acc}}
 
   """
-  @spec escape(Macro.t, Keyword.t, Macro.Env.t) :: {Macro.t, %{}}
-  def escape(expr, _vars, _env) when is_boolean(expr) do
-    {expr, %{}}
+  @spec escape(Macro.t, {list, term}, Keyword.t, Macro.Env.t) :: {Macro.t, {list, term}}
+  def escape(expr, params_acc, _vars, _env) when is_boolean(expr) do
+    {expr, params_acc}
   end
 
-  def escape(expr, vars, env) do
-    expr
-    |> List.wrap
-    |> Enum.map_reduce(%{}, &escape(&1, &2, vars, env))
+  def escape(expr, params_acc, vars, env) do
+    Builder.OrderBy.escape(:distinct, expr, params_acc, vars, env)
   end
 
-  defp escape(expr, params, vars, env) do
-    Builder.escape(expr, :any, params, vars, env)
+  @doc """
+  Called at runtime to verify distinct.
+  """
+  def distinct!(query, distinct, file, line) when is_boolean(distinct) do
+    apply(query, %Ecto.Query.QueryExpr{expr: distinct, params: [], line: line, file: file})
+  end
+  def distinct!(query, distinct, file, line) do
+    {expr, params} = Builder.OrderBy.order_by_or_distinct!(:distinct, query, distinct, [])
+    expr = %Ecto.Query.QueryExpr{expr: expr, params: Enum.reverse(params), line: line, file: file}
+    apply(query, expr)
   end
 
   @doc """
@@ -38,10 +46,16 @@ defmodule Ecto.Query.Builder.Distinct do
   runtime work.
   """
   @spec build(Macro.t, [Macro.t], Macro.t, Macro.Env.t) :: Macro.t
+  def build(query, _binding, {:^, _, [var]}, env) do
+    quote do
+      Ecto.Query.Builder.Distinct.distinct!(unquote(query), unquote(var), unquote(env.file), unquote(env.line))
+    end
+  end
+
   def build(query, binding, expr, env) do
-    binding        = Builder.escape_binding(binding)
-    {expr, params} = escape(expr, binding, env)
-    params         = Builder.escape_params(params)
+    {query, binding} = Builder.escape_binding(query, binding, env)
+    {expr, {params, _}} = escape(expr, {[], :acc}, binding, env)
+    params = Builder.escape_params(params)
 
     distinct = quote do: %Ecto.Query.QueryExpr{
                            expr: unquote(expr),
@@ -55,13 +69,13 @@ defmodule Ecto.Query.Builder.Distinct do
   The callback applied by `build/4` to build the query.
   """
   @spec apply(Ecto.Queryable.t, term) :: Ecto.Query.t
-  def apply(query, distinct) do
-    query = Ecto.Queryable.to_query(query)
-
-    if query.distinct do
-      Builder.error! "only one distinct expression is allowed in query"
-    else
-      %{query | distinct: distinct}
-    end
+  def apply(%Ecto.Query{distinct: nil} = query, expr) do
+    %{query | distinct: expr}
+  end
+  def apply(%Ecto.Query{}, _expr) do
+    Builder.error! "only one distinct expression is allowed in query"
+  end
+  def apply(query, expr) do
+    apply(Ecto.Queryable.to_query(query), expr)
   end
 end

@@ -1,60 +1,87 @@
 defmodule Ecto.Repo.Supervisor do
   @moduledoc false
-
   use Supervisor
+
+  @defaults [timeout: 15000, pool_size: 10]
+  @integer_url_query_params ["timeout", "pool_size"]
 
   @doc """
   Starts the repo supervisor.
   """
   def start_link(repo, otp_app, adapter, opts) do
-    name = opts[:name] || Application.get_env(otp_app, repo)[:name] || repo
-    Supervisor.start_link(__MODULE__, {name, repo, otp_app, adapter, opts}, [name: name])
+    sup_opts = if name = Keyword.get(opts, :name, repo), do: [name: name], else: []
+    Supervisor.start_link(__MODULE__, {name, repo, otp_app, adapter, opts}, sup_opts)
   end
 
   @doc """
-  Retrieves and normalizes the configuration for `repo` in `otp_app`.
+  Retrieves the runtime configuration.
   """
-  def config(repo, otp_app, custom) do
-    if config = Application.get_env(otp_app, repo) do
-      config = Keyword.merge(config, custom)
-      {url, config} = Keyword.pop(config, :url)
-      [otp_app: otp_app, repo: repo] ++ Keyword.merge(config, parse_url(url || ""))
+  def runtime_config(type, repo, otp_app, opts) do
+    config = Application.get_env(otp_app, repo, [])
+    config = [otp_app: otp_app] ++ (@defaults |> Keyword.merge(config) |> Keyword.merge(opts))
+    config = Keyword.put_new_lazy(config, :telemetry_prefix, fn -> telemetry_prefix(repo) end)
+
+    case repo_init(type, repo, config) do
+      {:ok, config} ->
+        validate_config!(repo, config)
+        {url, config} = Keyword.pop(config, :url)
+        {:ok, Keyword.merge(config, parse_url(url || ""))}
+
+      :ignore ->
+        :ignore
+    end
+  end
+
+  defp telemetry_prefix(repo) do
+    repo
+    |> Module.split()
+    |> Enum.map(& &1 |> Macro.underscore() |> String.to_atom())
+  end
+
+  defp repo_init(type, repo, config) do
+    if Code.ensure_loaded?(repo) and function_exported?(repo, :init, 2) do
+      repo.init(type, config)
     else
-      raise ArgumentError,
-        "configuration for #{inspect repo} not specified in #{inspect otp_app} environment"
+      {:ok, config}
+    end
+  end
+
+  defp validate_config!(repo, config) do
+    log = Keyword.get(config, :log, :debug)
+
+    unless log in [false, :debug, :info, :warn, :error] do
+      raise ArgumentError, "invalid :log configuration for #{inspect(repo)}, it should be " <>
+                             "false, :debug, :info, :warn or :error, got: #{inspect(log)}"
     end
   end
 
   @doc """
-  Parses the OTP configuration for compile time.
+  Retrieves the compile time configuration.
   """
-  def parse_config(repo, opts) do
+  def compile_config(_repo, opts) do
     otp_app = Keyword.fetch!(opts, :otp_app)
-    config  = Application.get_env(otp_app, repo, [])
-    adapter = opts[:adapter] || config[:adapter]
+    adapter = opts[:adapter]
 
     unless adapter do
-      raise ArgumentError, "missing :adapter configuration in " <>
-                           "config #{inspect otp_app}, #{inspect repo}"
+      raise ArgumentError, "missing :adapter option on use Ecto.Repo"
     end
 
-    unless Code.ensure_loaded?(adapter) do
+    unless Code.ensure_compiled?(adapter) do
       raise ArgumentError, "adapter #{inspect adapter} was not compiled, " <>
                            "ensure it is correct and it is included as a project dependency"
     end
 
-    {otp_app, adapter, pool(repo, config), config}
-  end
+    behaviours =
+      for {:behaviour, behaviours} <- adapter.__info__(:attributes),
+          behaviour <- behaviours,
+          do: behaviour
 
-  defp pool(repo, config) do
-    pool    = Keyword.get(config, :pool, Ecto.Pools.Poolboy)
-    name    = Keyword.get(config, :pool_name, default_pool_name(repo, config))
-    timeout = Keyword.get(config, :timeout, 5000)
-    {pool, name, timeout}
-  end
+    unless Ecto.Adapter in behaviours do
+      raise ArgumentError,
+            "expected :adapter option given to Ecto.Repo to list Ecto.Adapter as a behaviour"
+    end
 
-  defp default_pool_name(repo, config) do
-    Module.concat(Keyword.get(config, :name, repo), Pool)
+    {otp_app, adapter, behaviours}
   end
 
   @doc """
@@ -62,21 +89,13 @@ defmodule Ecto.Repo.Supervisor do
 
   The format must be:
 
-      "ecto://username:password@hostname:port/database"
-
-  or
-
-      {:system, "DATABASE_URL"}
+      "ecto://username:password@hostname:port/database?ssl=true&timeout=1000"
 
   """
   def parse_url(""), do: []
 
-  def parse_url({:system, env}) when is_binary(env) do
-    parse_url(System.get_env(env) || "")
-  end
-
   def parse_url(url) when is_binary(url) do
-    info = url |> URI.decode() |> URI.parse()
+    info = URI.parse(url)
 
     if is_nil(info.host) do
       raise Ecto.InvalidURLError, url: url, message: "host is not present"
@@ -86,41 +105,87 @@ defmodule Ecto.Repo.Supervisor do
       raise Ecto.InvalidURLError, url: url, message: "path should be a database name"
     end
 
-    if info.userinfo do
-      destructure [username, password], String.split(info.userinfo, ":")
-    end
-
+    destructure [username, password], info.userinfo && String.split(info.userinfo, ":")
     "/" <> database = info.path
 
-    opts = [username: username,
-            password: password,
-            database: database,
-            hostname: info.host,
-            port:     info.port]
+    url_opts = [username: username,
+                password: password,
+                database: database,
+                hostname: info.host,
+                port:     info.port]
 
-    Enum.reject(opts, fn {_k, v} -> is_nil(v) end)
+    query_opts = parse_uri_query(info)
+
+    for {k, v} <- url_opts ++ query_opts,
+        not is_nil(v),
+        do: {k, if(is_binary(v), do: URI.decode(v), else: v)}
+  end
+
+  defp parse_uri_query(%URI{query: nil}),
+    do: []
+  defp parse_uri_query(%URI{query: query} = url) do
+    query
+    |> URI.query_decoder()
+    |> Enum.reduce([], fn
+      {"ssl", "true"}, acc ->
+        [{:ssl, true}] ++ acc
+
+      {"ssl", "false"}, acc ->
+        [{:ssl, false}] ++ acc
+
+      {key, value}, acc when key in @integer_url_query_params ->
+        [{String.to_atom(key), parse_integer!(key, value, url)}] ++ acc
+
+      {key, value}, acc ->
+        [{String.to_atom(key), value}] ++ acc
+    end)
+  end
+
+  defp parse_integer!(key, value, url) do
+    case Integer.parse(value) do
+      {int, ""} ->
+        int
+
+      _ ->
+        raise Ecto.InvalidURLError,
+              url: url,
+              message: "can not parse value `#{value}` for parameter `#{key}` as an integer"
+    end
   end
 
   ## Callbacks
 
+  @doc false
   def init({name, repo, otp_app, adapter, opts}) do
-    opts = config(repo, otp_app, opts)
-    {default_pool, _, _} = repo.__pool__
+    case runtime_config(:supervisor, repo, otp_app, opts) do
+      {:ok, opts} ->
+        {:ok, child, meta} = adapter.init([repo: repo] ++ opts)
+        cache = Ecto.Query.Planner.new_query_cache(name)
+        child_spec = wrap_child_spec(child, [adapter, cache, meta])
+        Supervisor.init([child_spec], strategy: :one_for_one, max_restarts: 0)
 
-    opts =
-      opts
-      |> Keyword.delete(:name)
-      |> Keyword.put_new(:pool, default_pool)
-      |> Keyword.put_new(:pool_name, Module.concat(name, Pool))
-
-    children = [
-      supervisor(adapter, [repo, opts])
-    ]
-
-    if Keyword.get(opts, :query_cache_owner, repo == repo.__query_cache__) do
-      :ets.new(repo.__query_cache__, [:set, :public, :named_table, read_concurrency: true])
+      :ignore ->
+        :ignore
     end
+  end
 
-    supervise(children, strategy: :one_for_one)
+  def start_child({mod, fun, args}, adapter, cache, meta) do
+    case apply(mod, fun, args) do
+      {:ok, pid} ->
+        meta = Map.merge(meta, %{pid: pid, cache: cache})
+        Ecto.Repo.Registry.associate(self(), {adapter, meta})
+        {:ok, pid}
+
+      other ->
+        other
+    end
+  end
+
+  defp wrap_child_spec({id, start, restart, shutdown, type, mods}, args) do
+    {id, {__MODULE__, :start_child, [start | args]}, restart, shutdown, type, mods}
+  end
+
+  defp wrap_child_spec(%{start: start} = spec, args) do
+    %{spec | start: {__MODULE__, :start_child, [start | args]}}
   end
 end

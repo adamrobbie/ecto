@@ -1,25 +1,31 @@
-defmodule Ecto.Adapter.Transaction  do
+defmodule Ecto.Adapter.Transaction do
   @moduledoc """
   Specifies the adapter transactions API.
   """
 
-  use Behaviour
+  @type adapter_meta :: Ecto.Adapter.adapter_meta()
 
   @doc """
-  Runs the given function inside a transaction. Returns `{:ok, value}` if the
-  transaction was successful where `value` is the value return by the function
-  or `{:error, value}` if the transaction was rolled back where `value` is the
-  value given to `rollback/1`.
+  Runs the given function inside a transaction.
 
-  See `Ecto.Repo.transaction/1`.
+  Returns `{:ok, value}` if the transaction was successful where `value`
+  is the value return by the function or `{:error, value}` if the transaction
+  was rolled back where `value` is the value given to `rollback/1`.
   """
-  defcallback transaction(Ecto.Repo.t, Keyword.t, fun) :: {:ok, any} | {:error, any}
+  @callback transaction(adapter_meta, options :: Keyword.t(), function :: fun) ::
+              {:ok, any} | {:error, any}
 
   @doc """
-  Rolls back the current transaction. The transaction will return the value
-  given as `{:error, value}`.
-
-  See `Ecto.Repo.rollback/1`.
+  Returns true if the given process is inside a transaction.
   """
-  defcallback rollback(Ecto.Repo.t, any) :: no_return
+  @callback in_transaction?(adapter_meta) :: boolean
+
+  @doc """
+  Rolls back the current transaction.
+
+  The transaction will return the value given as `{:error, value}`.
+
+  See `c:Ecto.Repo.rollback/1`.
+  """
+  @callback rollback(adapter_meta, value :: any) :: no_return
 end

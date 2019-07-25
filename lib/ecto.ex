@@ -2,29 +2,43 @@ defmodule Ecto do
   @moduledoc ~S"""
   Ecto is split into 4 main components:
 
-    * `Ecto.Repo` - repositories are wrappers around the database.
+    * `Ecto.Repo` - repositories are wrappers around the data store.
       Via the repository, we can create, update, destroy and query existing entries.
-      A repository needs an adapter and a URL to communicate to the database
+      A repository needs an adapter and credentials to communicate to the database
 
-    * `Ecto.Model` - models build on top of `Ecto.Schema` to provide a set of
-      functionalities for defining data structures, manipulating them, as well
-      as life-cycle callbacks and more
+    * `Ecto.Schema` - schemas are used to map any data source into an Elixir
+      struct. We will often use them to map tables into Elixir data but that's
+      one of their use cases and not a requirement for using Ecto
 
     * `Ecto.Changeset` - changesets provide a way for developers to filter
       and cast external parameters, as well as a mechanism to track and
-      validate changes before their are sent to the database
+      validate changes before they are applied to your data
 
     * `Ecto.Query` - written in Elixir syntax, queries are used to retrieve
       information from a given repository. Queries in Ecto are secure, avoiding
-      common problems like SQL Injection, and also provide type safety. Queries
-      are composable via the `Ecto.Queryable` protocol
+      common problems like SQL Injection, while still being composable, allowing
+      developers to build queries piece by piece instead of all at once
+
+  Besides the four components above, most developers use Ecto to interact
+  with SQL databases, such as Postgres and MySQL via the
+  [`ecto_sql`](http://hexdocs.pm/ecto_sql) project. `ecto_sql` provides many
+  conveniences for working with SQL databases as well as the ability to version
+  how your database changes through time via
+  [database migrations](https://hexdocs.pm/ecto_sql/Ecto.Adapters.SQL.html#module-migrations).
+
+  If you want to quickly check a sample application using Ecto, please check
+  the [getting started guide](http://hexdocs.pm/ecto/getting-started.html) and
+  the accompanying sample application.
+
+  After exploring the documentation and guides, consider checking out the
+  ["What's new in Ecto 2.1"](http://pages.plataformatec.com.br/ebook-whats-new-in-ecto-2-0)
+  free ebook to learn more about many features in Ecto 2.1 such as `many_to_many`,
+  schemaless queries, concurrent testing and more. Note the book still applies
+  to Ecto 3.0 as a whole, as the new features in Ecto 2.1 still exist in Ecto 3.0.
 
   In the following sections, we will provide an overview of those components and
   how they interact with each other. Feel free to access their respective module
   documentation for more specific examples, options and configuration.
-
-  If you want to quickly check a sample application using Ecto, please check
-  https://github.com/elixir-lang/ecto/tree/master/examples/simple.
 
   ## Repositories
 
@@ -32,53 +46,47 @@ defmodule Ecto do
   repository as follows:
 
       defmodule Repo do
-        use Ecto.Repo, otp_app: :my_app
+        use Ecto.Repo,
+          otp_app: :my_app,
+          adapter: Ecto.Adapters.Postgres
       end
 
   Where the configuration for the Repo must be in your application
   environment, usually defined in your `config/config.exs`:
 
       config :my_app, Repo,
-        adapter: Ecto.Adapters.Postgres,
         database: "ecto_simple",
         username: "postgres",
         password: "postgres",
-        hostname: "localhost"
+        hostname: "localhost",
+        # OR use a URL to connect instead
+        url: "postgres://postgres:postgres@localhost/ecto_simple"
 
   Each repository in Ecto defines a `start_link/0` function that needs to be invoked
   before using the repository. In general, this function is not called directly,
   but used as part of your application supervision tree.
 
   If your application was generated with a supervisor (by passing `--sup` to `mix new`)
-  you will have a `lib/my_app.ex` file containing the application start callback that
-  defines and starts your supervisor. You just need to edit the `start/2` function to
-  start the repo as a worker on the supervisor:
+  you will have a `lib/my_app/application.ex` file containing the application start
+  callback that defines and starts your supervisor.  You just need to edit the `start/2`
+  function to start the repo as a supervisor on your application's supervisor:
 
       def start(_type, _args) do
-        import Supervisor.Spec
-
         children = [
-          worker(Repo, [])
+          {MyApp.Repo, []}
         ]
 
         opts = [strategy: :one_for_one, name: MyApp.Supervisor]
         Supervisor.start_link(children, opts)
       end
 
-  ## Models
+  ## Schema
 
-  Models provide a set of functionalities around structuring your data,
-  defining relationships and applying changes to repositories.
-
-  For now, we will cover two of those:
-
-    * `Ecto.Schema` - provides the API necessary to define schemas
-    * `Ecto.Changeset` - defines how models should be changed in the database
-
+  Schemas allow developers to define the shape of their data.
   Let's see an example:
 
       defmodule Weather do
-        use Ecto.Model
+        use Ecto.Schema
 
         # weather is the DB table
         schema "weather" do
@@ -96,7 +104,7 @@ defmodule Ecto do
       iex> weather.temp_lo
       30
 
-  The schema also allows the model to interact with a repository:
+  The schema also allows us to interact with a repository:
 
       iex> weather = %Weather{temp_lo: 0, temp_hi: 23}
       iex> Repo.insert!(weather)
@@ -114,8 +122,8 @@ defmodule Ecto do
       iex> Repo.delete!(weather)
       %Weather{...}
 
-  > NOTE: by using `Ecto.Model`, an `:id` field with type `:integer` is
-  > generated by default, which is the primary key of the Model. If you want
+  > NOTE: by using `Ecto.Schema`, an `:id` field with type `:id` (:id means :integer) is
+  > generated by default, which is the primary key of the Schema. If you want
   > to use a different primary key, you can declare custom `@primary_key`
   > before the `schema/2` call. Consult the `Ecto.Schema` documentation
   > for more information.
@@ -128,21 +136,22 @@ defmodule Ecto do
       by large, complex objects, with entwined state transactions, which makes
       serialization, maintenance and understanding hard;
 
-    * By making the storage explicit with repositories, we don't pollute the
-      repository with unnecessary overhead, providing straight-forward and
-      performant access to storage;
+    * You do not need to define schemas in order to interact with repositories,
+      operations like `all`, `insert_all` and so on allow developers to directly
+      access and modify the data, keeping the database at your fingertips when
+      necessary;
 
   ## Changesets
 
   Although in the example above we have directly inserted and deleted the
-  model in the repository, update operations must be done through changesets
-  so Ecto efficiently track changes.
+  struct in the repository, operations on top of schemas are done through
+  changesets so Ecto can efficiently track changes.
 
-  Further than that, changesets allow developers to filter, cast, and validate
-  changes before we apply them to a model. Imagine the given model:
+  Changesets allow developers to filter, cast, and validate changes before
+  we apply them to the data. Imagine the given schema:
 
       defmodule User do
-        use Ecto.Model
+        use Ecto.Schema
 
         import Ecto.Changeset
 
@@ -152,67 +161,44 @@ defmodule Ecto do
           field :age, :integer
         end
 
-        def changeset(user, params \\ :empty) do
+        def changeset(user, params \\ %{}) do
           user
-          |> cast(params, ~w(name email), ~w(age))
+          |> cast(params, [:name, :email, :age])
+          |> validate_required([:name, :email])
           |> validate_format(:email, ~r/@/)
           |> validate_inclusion(:age, 18..100)
         end
       end
 
   The `changeset/2` function first invokes `Ecto.Changeset.cast/4` with
-  the model, the parameters and a list of required and optional fields;
-  this returns a changeset. The parameter is a map with binary keys and
-  a value that will be cast based on the type defined on the model schema.
+  the struct, the parameters and a list of allowed fields; this returns a changeset.
+  The parameters is a map with binary keys and values that will be cast based
+  on the type defined on the schema.
 
-  Any parameter that was not explicitly listed in the required or
-  optional fields list will be ignored. Furthermore, if a field is given
-  as required but it is not in the parameter map nor in the model, it will
-  be marked with an error and the changeset is deemed invalid.
+  Any parameter that was not explicitly listed in the fields list will be ignored.
 
-  After casting, the changeset is given to many `Ecto.Changeset.validate_*/2`
+  After casting, the changeset is given to many `Ecto.Changeset.validate_*`
   functions that validate only the **changed fields**. In other words:
   if a field was not given as a parameter, it won't be validated at all.
   For example, if the params map contain only the "name" and "email" keys,
   the "age" validation won't run.
 
-  As an example, let's see how we could use the changeset above in
-  a web application that needs to update users:
+  Once a changeset is built, it can be given to functions like `insert` and
+  `update` in the repository that will return an `:ok` or `:error` tuple:
 
-      def update(id, params) do
-        changeset = User.changeset Repo.get!(User, id), params["user"]
-
-        case Repo.update(changeset) do
-          {:ok, user} ->
-            send_resp conn, 200, "Ok"
-          {:error, changeset} ->
-            send_resp conn, 400, "Bad request"
-        end
-      end
-
-  The `changeset/2` function receives the user model and its parameters
-  and returns a changeset. If the changeset is valid, we persist the
-  changes to the database, otherwise, we handle the error by emitting
-  a bad request code.
-
-  Another example to create users:
-
-      def create(id, params) do
-        changeset = User.changeset %User{}, params["user"]
-
-        case Repo.insert(changeset) do
-          {:ok, user} ->
-            send_resp conn, 200, "Ok"
-          {:error, changeset} ->
-            send_resp conn, 400, "Bad request"
-        end
+      case Repo.update(changeset) do
+        {:ok, user} ->
+          # user updated
+        {:error, changeset} ->
+          # an error occurred
       end
 
   The benefit of having explicit changesets is that we can easily provide
   different changesets for different use cases. For example, one
-  could easily provide specific changesets for create and update:
+  could easily provide specific changesets for registering and updating
+  users:
 
-      def create_changeset(user, params) do
+      def registration_changeset(user, params) do
         # Changeset on create
       end
 
@@ -234,11 +220,22 @@ defmodule Ecto do
 
       import Ecto.Query, only: [from: 2]
 
-      query = from w in Weather,
-            where: w.prcp > 0 or is_nil(w.prcp),
-           select: w
+      query = from u in User,
+                where: u.age > 18 or is_nil(u.email),
+                select: u
 
-      # Returns %Weather{} structs matching the query
+      # Returns %User{} structs matching the query
+      Repo.all(query)
+
+  In the example above we relied on our schema but queries can also be
+  made directly against a table by giving the table name as a string. In
+  such cases, the data to be fetched must be explicitly outlined:
+
+      query = from u in "users",
+                where: u.age > 18 or is_nil(u.email),
+                select: %{name: u.name, age: u.age}
+
+      # Returns maps as defined in select
       Repo.all(query)
 
   Queries are defined and extended with the `from` macro. The supported
@@ -264,31 +261,29 @@ defmodule Ecto do
   access params values or invoke Elixir functions, you need to use the `^`
   operator, which is overloaded by Ecto:
 
-      def min_prcp(min) do
-        from w in Weather, where: w.prcp > ^min or is_nil(w.prcp)
+      def min_age(min) do
+        from u in User, where: u.age > ^min
       end
 
-  Besides `Repo.all/1`, which returns all entries, repositories also
-  provide `Repo.one/1`, which returns one entry or nil, and `Repo.one!/1`
-  which returns one entry or raises.
+  Besides `Repo.all/1` which returns all entries, repositories also
+  provide `Repo.one/1` which returns one entry or nil, `Repo.one!/1`
+  which returns one entry or raises, `Repo.get/2` which fetches
+  entries for a particular ID and more.
+
+  Finally, if you need an escape hatch, Ecto provides fragments
+  (see `Ecto.Query.API.fragment/1`) to inject SQL (and non-SQL)
+  fragments into queries. Also, most adapters provide direct
+  APIs for queries, like `Ecto.Adapters.SQL.query/4`, allowing
+  developers to completely bypass Ecto queries.
 
   ## Other topics
-
-  ### Mix tasks and generators
-
-  Ecto provides many tasks to help your workflow as well as code generators.
-  You can find all available tasks by typing `mix help` inside a project
-  with Ecto listed as a dependency.
-
-  Ecto generators will automatically open the generated files if you have
-  `ECTO_EDITOR` set in your environment variable.
 
   ### Associations
 
   Ecto supports defining associations on schemas:
 
       defmodule Post do
-        use Ecto.Model
+        use Ecto.Schema
 
         schema "posts" do
           has_many :comments, Comment
@@ -296,7 +291,7 @@ defmodule Ecto do
       end
 
       defmodule Comment do
-        use Ecto.Model
+        use Ecto.Schema
 
         schema "comments" do
           field :title, :string
@@ -304,7 +299,7 @@ defmodule Ecto do
         end
       end
 
-  When an association is defined, Ecto also defines a field in the model
+  When an association is defined, Ecto also defines a field in the schema
   with the association name. By default, associations are not loaded into
   this field:
 
@@ -329,32 +324,32 @@ defmodule Ecto do
 
       posts = Repo.all(Post) |> Repo.preload(:comments)
 
-  The `Ecto.Model` module also provides conveniences for working
-  with associations. For example, `Ecto.Model.assoc/2` returns a query
+  The `Ecto` module also provides conveniences for working
+  with associations. For example, `Ecto.assoc/2` returns a query
   with all associated data to a given struct:
 
-      import Ecto.Model
+      import Ecto
 
       # Get all comments for the given post
       Repo.all assoc(post, :comments)
 
       # Or build a query on top of the associated comments
-      query = from c in assoc(post, :comments), where: c.title != nil
+      query = from c in assoc(post, :comments), where: not is_nil(c.title)
       Repo.all(query)
 
-  Another function in `Ecto.Model` is `build/3`, which allows someone
-  to build an associated model with the proper fields:
+  Another function in `Ecto` is `build_assoc/3`, which allows
+  someone to build an associated struct with the proper fields:
 
       Repo.transaction fn ->
         post = Repo.insert!(%Post{title: "Hello", body: "world"})
 
-        # Build a comment from the post model
-        comment = Ecto.Model.build(post, :comments, body: "Excellent!")
+        # Build a comment from post
+        comment = Ecto.build_assoc(post, :comments, body: "Excellent!")
 
         Repo.insert!(comment)
       end
 
-  In the example above, `Ecto.Model.build/3` is equivalent to:
+  In the example above, `Ecto.build_assoc/3` is equivalent to:
 
       %Comment{post_id: post.id, body: "Excellent!"}
 
@@ -371,20 +366,244 @@ defmodule Ecto do
   entries in different tables, embeds stores the child along side the
   parent.
 
-  Databases like Mongo have native support for embeds. Databases
+  Databases like MongoDB have native support for embeds. Databases
   like PostgreSQL uses a mixture of JSONB (`embeds_one/3`) and ARRAY
   columns to provide this functionality.
 
   Check `Ecto.Schema.embeds_one/3` and `Ecto.Schema.embeds_many/3`
   for more information.
 
-  ### Migrations
+  ### Mix tasks and generators
 
-  Ecto supports database migrations. You can generate a migration with:
+  Ecto provides many tasks to help your workflow as well as code generators.
+  You can find all available tasks by typing `mix help` inside a project
+  with Ecto listed as a dependency.
 
-      $ mix ecto.gen.migration create_posts
+  Ecto generators will automatically open the generated files if you have
+  `ECTO_EDITOR` set in your environment variable.
 
-  This will create a new file inside `priv/repo/migrations` with the `up` and
-  `down` functions. Check `Ecto.Migration` for more information.
+  #### Repo resolution
+
+  Ecto requires developers to specify the key `:ecto_repos` in their
+  application configuration before using tasks like `ecto.create` and
+  `ecto.migrate`. For example:
+
+      config :my_app, :ecto_repos, [MyApp.Repo]
+
+      config :my_app, MyApp.Repo,
+        database: "ecto_simple",
+        username: "postgres",
+        password: "postgres",
+        hostname: "localhost"
+
   """
+
+  @doc """
+  Returns the schema primary keys as a keyword list.
+  """
+  @spec primary_key(Ecto.Schema.t) :: Keyword.t
+  def primary_key(%{__struct__: schema} = struct) do
+    Enum.map schema.__schema__(:primary_key), fn(field) ->
+      {field, Map.fetch!(struct, field)}
+    end
+  end
+
+  @doc """
+  Returns the schema primary keys as a keyword list.
+
+  Raises `Ecto.NoPrimaryKeyFieldError` if the schema has no
+  primary key field.
+  """
+  @spec primary_key!(Ecto.Schema.t) :: Keyword.t
+  def primary_key!(%{__struct__: schema} = struct) do
+    case primary_key(struct) do
+      [] -> raise Ecto.NoPrimaryKeyFieldError, schema: schema
+      pk -> pk
+    end
+  end
+
+  @doc """
+  Builds a struct from the given `assoc` in `struct`.
+
+  ## Examples
+
+  If the relationship is a `has_one` or `has_many` and
+  the key is set in the given struct, the key will automatically
+  be set in the built association:
+
+      iex> post = Repo.get(Post, 13)
+      %Post{id: 13}
+      iex> build_assoc(post, :comments)
+      %Comment{id: nil, post_id: 13}
+
+  Note though it doesn't happen with `belongs_to` cases, as the
+  key is often the primary key and such is usually generated
+  dynamically:
+
+      iex> comment = Repo.get(Comment, 13)
+      %Comment{id: 13, post_id: 25}
+      iex> build_assoc(comment, :post)
+      %Post{id: nil}
+
+  You can also pass the attributes, which can be a map or
+  a keyword list, to set the struct's fields except the
+  association key.
+
+      iex> build_assoc(post, :comments, text: "cool")
+      %Comment{id: nil, post_id: 13, text: "cool"}
+
+      iex> build_assoc(post, :comments, %{text: "cool"})
+      %Comment{id: nil, post_id: 13, text: "cool"}
+
+      iex> build_assoc(post, :comments, post_id: 1)
+      %Comment{id: nil, post_id: 13}
+  """
+  def build_assoc(%{__struct__: schema} = struct, assoc, attributes \\ %{}) do
+    assoc = Ecto.Association.association_from_schema!(schema, assoc)
+    assoc.__struct__.build(assoc, struct, drop_meta(attributes))
+  end
+
+  defp drop_meta(%{} = attrs), do: Map.drop(attrs, [:__struct__, :__meta__])
+  defp drop_meta([_|_] = attrs), do: Keyword.drop(attrs, [:__struct__, :__meta__])
+
+  @doc """
+  Builds a query for the association in the given struct or structs.
+
+  ## Examples
+
+  In the example below, we get all comments associated to the given
+  post:
+
+      post = Repo.get Post, 1
+      Repo.all Ecto.assoc(post, :comments)
+
+  `assoc/2` can also receive a list of posts, as long as the posts are
+  not empty:
+
+      posts = Repo.all from p in Post, where: is_nil(p.published_at)
+      Repo.all Ecto.assoc(posts, :comments)
+
+  This function can also be used to dynamically load through associations
+  by giving it a list. For example, to get all authors for all comments for
+  the given posts, do:
+
+      posts = Repo.all from p in Post, where: is_nil(p.published_at)
+      Repo.all Ecto.assoc(posts, [:comments, :author])
+
+  """
+  def assoc(struct_or_structs, assocs) do
+    [assoc | assocs] = List.wrap(assocs)
+    structs = List.wrap(struct_or_structs)
+
+    if structs == [] do
+      raise ArgumentError, "cannot retrieve association #{inspect assoc} for empty list"
+    end
+
+    schema = hd(structs).__struct__
+    assoc = %{owner_key: owner_key} =
+      Ecto.Association.association_from_schema!(schema, assoc)
+
+    values =
+      Enum.uniq for(struct <- structs,
+        assert_struct!(schema, struct),
+        key = Map.fetch!(struct, owner_key),
+        do: key)
+
+    Ecto.Association.assoc_query(assoc, assocs, nil, values)
+  end
+
+  @doc """
+  Checks if an association is loaded.
+
+  ## Examples
+
+      iex> post = Repo.get(Post, 1)
+      iex> Ecto.assoc_loaded?(post.comments)
+      false
+      iex> post = post |> Repo.preload(:comments)
+      iex> Ecto.assoc_loaded?(post.comments)
+      true
+
+  """
+  def assoc_loaded?(%Ecto.Association.NotLoaded{}), do: false
+  def assoc_loaded?(list) when is_list(list), do: true
+  def assoc_loaded?(%_{}), do: true
+  def assoc_loaded?(nil), do: true
+
+  @doc """
+  Gets the metadata from the given struct.
+  """
+  def get_meta(struct, :context),
+    do: struct.__meta__.context
+  def get_meta(struct, :state),
+    do: struct.__meta__.state
+  def get_meta(struct, :source),
+    do: struct.__meta__.source
+  def get_meta(struct, :prefix),
+    do: struct.__meta__.prefix
+
+  @doc """
+  Returns a new struct with updated metadata.
+
+  It is possible to set:
+
+    * `:source` - changes the struct query source
+    * `:prefix` - changes the struct query prefix
+    * `:context` - changes the struct meta context
+    * `:state` - changes the struct state
+
+  Please refer to the `Ecto.Schema.Metadata` module for more information.
+  """
+  @spec put_meta(Ecto.Schema.schema, meta) :: Ecto.Schema.schema
+        when meta: [source: Ecto.Schema.source, prefix: Ecto.Schema.prefix,
+                    context: Ecto.Schema.Metadata.context, state: Ecto.Schema.Metadata.state]
+  def put_meta(%{__meta__: meta} = struct, opts) do
+    case put_or_noop_meta(opts, meta, false) do
+      :noop -> struct
+      meta -> %{struct | __meta__: meta}
+    end
+  end
+
+  defp put_or_noop_meta([{key, value}|t], meta, updated?) do
+    case meta do
+      %{^key => ^value} -> put_or_noop_meta(t, meta, updated?)
+      _ -> put_or_noop_meta(t, put_meta(meta, key, value), true)
+    end
+  end
+
+  defp put_or_noop_meta([], meta, true), do: meta
+  defp put_or_noop_meta([], _meta, false), do: :noop
+
+  defp put_meta(meta, :state, state) do
+    if state in [:built, :loaded, :deleted] do
+      %{meta | state: state}
+    else
+      raise ArgumentError, "invalid state #{inspect state}"
+    end
+  end
+
+  defp put_meta(meta, :source, source) do
+    %{meta | source: source}
+  end
+
+  defp put_meta(meta, :prefix, prefix) do
+    %{meta | prefix: prefix}
+  end
+
+  defp put_meta(meta, :context, context) do
+    %{meta | context: context}
+  end
+
+  defp put_meta(_meta, key, _value) do
+    raise ArgumentError, "unknown meta key #{inspect key}"
+  end
+
+  defp assert_struct!(module, %{__struct__: struct}) do
+    if struct != module do
+      raise ArgumentError, "expected a homogeneous list containing the same struct, " <>
+                           "got: #{inspect module} and #{inspect struct}"
+    else
+      true
+    end
+  end
 end

@@ -1,64 +1,88 @@
 defmodule Ecto.LogEntry do
-  @doc """
-  Struct used for logging entries.
-
-  It is composed of the following fields:
-
-    * query - the query as iodata or a function that when invoked
-      resolves to iodata;
-    * params - the query parameters;
-    * result - the query result as an `:ok` or `:error` tuple;
-    * query_time - the time spent executing the query in microseconds;
-    * queue_time - the time spent to check the connection out in microseconds (it may be nil);
-    * connection_pid - the connection process that executed the query
-  """
-
+  @moduledoc false
   alias Ecto.LogEntry
 
-  @type t :: %LogEntry{query: iodata | (t -> iodata), params: [term],
-                       query_time: integer, queue_time: integer, connection_pid: pid | nil,
-                       result: {:ok, term} | {:error, Exception.t}}
-  defstruct query: nil, params: [], query_time: nil, queue_time: nil, result: nil,
-            connection_pid: nil
+  @type t :: %LogEntry{
+          query: String.t(),
+          source: String.t() | Enum.t() | nil,
+          params: [term],
+          query_time: integer | nil,
+          decode_time: integer | nil,
+          queue_time: integer | nil,
+          result: {:ok, term} | {:error, Exception.t()}
+        }
+
+  defstruct query: nil,
+            source: nil,
+            params: [],
+            query_time: nil,
+            decode_time: nil,
+            queue_time: nil,
+            result: nil
+
+  require Logger
 
   @doc """
-  Resolves a log entry.
+  Logs the given entry in the given level.
 
-  In case the query is represented by a function for lazy
-  computation, this function resolves it into iodata.
+  The logger call won't be removed at compile time as
+  custom level is given.
   """
-  def resolve(%LogEntry{query: fun} = entry) when is_function(fun) do
-    %{entry | query: fun.(entry)}
-  end
-
-  def resolve(%LogEntry{} = entry) do
-    entry
+  @deprecated "Use Telemetry instead"
+  def log(entry, level \\ :debug, metadata \\ []) do
+    Logger.log(level, fn -> to_iodata(entry) end, metadata)
   end
 
   @doc """
   Converts a log entry into iodata.
-
-  The entry is automatically resolved if it hasn't been yet.
   """
+  @deprecated "Use Telemetry instead"
   def to_iodata(entry) do
-    %{query_time: query_time, queue_time: queue_time,
-      params: params, query: query, result: result} = entry = resolve(entry)
+    %{
+      query_time: query_time,
+      decode_time: decode_time,
+      queue_time: queue_time,
+      params: params,
+      query: query,
+      result: result,
+      source: source
+    } = entry
 
-    params = Enum.map params, fn
-      %Ecto.Query.Tagged{value: value} -> value
-      value -> value
-    end
+    params =
+      Enum.map(params, fn
+        %Ecto.Query.Tagged{value: value} -> value
+        value -> value
+      end)
 
-    {entry, [query, ?\s, inspect(params, char_lists: false), ?\s, ok_error(result),
-             time("query", query_time, true), time("queue", queue_time, false)]}
+    [
+      "QUERY",
+      ?\s,
+      ok_error(result),
+      ok_source(source),
+      time("db", query_time, true),
+      time("decode", decode_time, false),
+      time("queue", queue_time, false),
+      ?\n,
+      query,
+      ?\s,
+      inspect(params, charlists: false)
+    ]
   end
 
-  defp ok_error({:ok, _}),    do: "OK"
+  ## Helpers
+
+  defp ok_error({:ok, _}), do: "OK"
   defp ok_error({:error, _}), do: "ERROR"
 
+  defp ok_source(nil), do: ""
+  defp ok_source(source), do: " source=#{inspect(source)}"
+
   defp time(_label, nil, _force), do: []
+
   defp time(label, time, force) do
-    ms = div(time, 100) / 10
+    us = System.convert_time_unit(time, :native, :microsecond)
+    ms = div(us, 100) / 10
+
     if force or ms > 0 do
       [?\s, label, ?=, :io_lib_format.fwrite_g(ms), ?m, ?s]
     else
